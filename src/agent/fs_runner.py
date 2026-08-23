@@ -3,6 +3,26 @@ import json
 import os
 
 
+def _resolve(rel):
+    """Map a tool 'path' onto the sandbox workspace.
+
+    Tool paths are RELATIVE by contract. os.path.join would silently accept
+    absolute targets ('/opt/skills', '/etc/...') and let file tools act on the
+    shared skills volume or anywhere else in the container — enforce strict
+    containment instead.
+    """
+    if not isinstance(rel, str) or not rel.strip():
+        raise ValueError("a non-empty path relative to the workspace root is required")
+    if os.path.isabs(rel) or rel.startswith("~"):
+        raise ValueError(f"path must be RELATIVE to the workspace root, got '{rel}'")
+    p = os.path.normpath(os.path.join("/workspace", rel))
+    ws = os.path.realpath("/workspace")
+    rp = os.path.realpath(p)
+    if rp != ws and not rp.startswith(ws + os.sep):
+        raise ValueError(f"path escapes the workspace: '{rel}'")
+    return p
+
+
 def main():
     try:
         req = json.loads(sys.stdin.read())
@@ -11,8 +31,12 @@ def main():
         return
 
     op = req.get("op", "")
-    rel = req.get("path", "")
-    p = os.path.join("/workspace", rel)
+    try:
+        p = _resolve(req.get("path", ""))
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+    rel = os.path.relpath(p, "/workspace")
 
     try:
         if op == "read":
