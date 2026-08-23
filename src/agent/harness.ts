@@ -5,6 +5,7 @@ import { tools } from "./tools.js";
 import { extractJsonObjects, parseToolArguments } from "./jsonUtils.js";
 import { buildHistory } from "./context.js";
 import { serializeObservation } from "./tools.js";
+import { listSkills, readSkillBody } from "./skills.js";
 
 type StreamingToolCall = {
   id: string;
@@ -63,7 +64,7 @@ export class AgentHarness {
 
       turn++;
       const rawMessages = db.getMessages(sessionId);
-      const messagesForApi = this.prepareMessages(rawMessages, sessionWorkspace);
+      const messagesForApi = await this.prepareMessages(rawMessages, sessionWorkspace);
 
       db.appendEvent(sessionId, "turn_started", { turn });
 
@@ -513,29 +514,67 @@ export class AgentHarness {
     }
   }
 
-  private prepareMessages(records: any[], workspaceDir: string): any[] {
+  private async prepareMessages(records: any[], workspaceDir: string): Promise<any[]> {
     // Attachment markers are appended here — prompt-only decoration. The
     // transcript stays clean; every replay still tells the model where its
     // files live.
-    const enriched = records.map((r) => {
-      if (r.role !== "user" || !r.id) return r;
-      const atts = db.getMessageAttachments(r.id);
-      if (atts.length === 0) return r;
-      const markers = atts
-        .map((a) => {
-          const kb = a.size >= 1024 ? `${(a.size / 1024).toFixed(0)}KB` : `${a.size}B`;
-          return a.kind === "image" ? `[첨부 이미지: ${a.path} · ${kb}]` : `[첨부 파일: ${a.path} · ${kb}]`;
-        })
-        .join("\n");
-      return { ...r, content: `${r.content ?? ""}\n\n${markers}` };
-    });
+    const enriched = await Promise.all(
+      records.map(async (r) => {
+        if (r.role !== "user" || !r.id) return r;
+        const atts = db.getMessageAttachments(r.id);
+        if (atts.length === 0) return r;
+        const markers = atts
+          .filter((a) => a.kind !== "skill")
+          .map((a) => {
+            const kb = a.size >= 1024 ? `${(a.size / 1024).toFixed(0)}KB` : `${a.size}B`;
+            return a.kind === "image" ? `[첨부 이미지: ${a.path} · ${kb}]` : `[첨부 파일: ${a.path} · ${kb}]`;
+          })
+          .join("\n");
+        let content = `${r.content ?? ""}`;
+        if (markers) content += `\n\n${markers}`;
+        // Slash-invoked skills ride in the user turn as wrapped instruction
+        // blocks; the transcript itself stays clean (prompt-only decoration).
+        for (const a of atts.filter((x) => x.kind === "skill")) {
+          const s = await readSkillBody(a.path);
+          if (!s) {
+            content += `\n\n[스킬 유실: ${a.path}]`;
+            continue;
+          }
+          content +=
+            `\n\n<skill_content name="${a.path}">\n` +
+            `Base directory for this skill: ${s.dir}\n` +
+            `Relative paths in this skill are relative to this base directory.\n\n` +
+            `${s.body}\n` +
+            `</skill_content>`;
+        }
+        return { ...r, content };
+      })
+    );
+
+    const skills = listSkills();
+    const skillsSection =
+      skills.length === 0
+        ? ""
+        : `
+# Skills:
+Skills provide specialized instructions and workflows for specific tasks.
+Use the load_skill tool to load a skill when a task matches its description.
+<available_skills>
+${skills.map((s) => `<skill>\n<name>${s.name}</name>\n<description>${s.description.replace(/]]>/g, "")}</description>\n<location>/opt/skills/${s.name}/SKILL.md</location>\n</skill>`).join("\n")}
+</available_skills>
+Skills live under /opt/skills in your sandbox, which is WRITABLE: install new
+skills by creating <name>/SKILL.md there (git clone or curl also work); they
+become available from your next turn.
+`;
 
     const systemPrompt = {
       role: "system",
       content: `You are OpenChat, an elite autonomous AI software engineering agent.
-You operate inside an isolated session sandbox at: ${workspaceDir}
-Your current working directory (CWD) is set to your sandbox root.
-
+You operate inside an isolated session sandbox rooted at: ${workspaceDir}
+Always use paths RELATIVE to that root in tool arguments. Inside the
+bash/python container the same directory is mounted at /workspace — never
+guess absolute host or container paths.
+${skillsSection}
 # History convention:
 - Tool observations from earlier work may appear as one-line receipts like
   [bash · ok · 78.9KB · full copy: read_output {"id": 42}]. The call and its
@@ -564,7 +603,8 @@ Your current working directory (CWD) is set to your sandbox root.
 - \`web_crawl\`: Multi-page spider crawler powered by Scrapling. Crawls websites via sitemap.xml or link following with regex pattern filtering, extracts targeted content, and saves structured results to a file (JSON/CSV).
 - \`read_file\`, \`write_file\`, \`patch_file\`: Inspect, create/overwrite, and surgically patch files in the sandbox.
 - \`python\`: Execute Python 3 code for computation and analysis.
-- \`view_image\`: Look at an image file (user uploads in uploads/ or generated images). When a message carries an attachment marker like [첨부 이미지: uploads/x.png · 240KB], call view_image with that path to actually see it before reasoning about its content.`,
+- \`view_image\`: Look at an image file (user uploads in uploads/ or generated images). When a message carries an attachment marker like [첨부 이미지: uploads/x.png · 240KB], call view_image with that path to actually see it before reasoning about its content.
+- \`load_skill\`: Load an installed skill's full instructions on demand when the task matches its description (see available_skills above).`,
     };
 
     const { messages } = buildHistory(enriched, {

@@ -5,11 +5,13 @@ import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { CONFIG } from "./config.js";
 import { db } from "./db/database.js";
 import { coordinator } from "./agent/coordinator.js";
 import { sniffImageMime } from "./agent/tools.js";
+import { listSkills } from "./agent/skills.js";
 import { tools } from "./agent/tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +26,10 @@ app.get("/api/sessions", (c) => {
 });
 
 // API: Models from gateway (plus the platform default model)
+app.get("/api/skills", (c) => {
+  return c.json(listSkills().map(({ name, description }) => ({ name, description })));
+});
+
 app.get("/api/models", async (c) => {
   try {
     const res = await fetch(`${CONFIG.LLM_BASE_URL}/models`, {
@@ -231,26 +237,45 @@ app.post("/api/sessions/:id/attachments", async (c) => {
 });
 
 // API: Messages & Execution
-app.post("/api/sessions/:id/messages", async (c) => {
-  const id = c.req.param("id");
-  const session = db.getSession(id);
-  if (!session) return c.json({ error: "Session not found" }, 404);
+ app.post("/api/sessions/:id/messages", async (c) => {
+   const id = c.req.param("id");
+   const session = db.getSession(id);
+   if (!session) return c.json({ error: "Session not found" }, 404);
 
-  const body = await c.req.json().catch(() => ({}));
-  const prompt = (body.content || "").trim();
-  if (!prompt) return c.json({ error: "Content is required" }, 400);
+   const body = await c.req.json().catch(() => ({}));
+   let prompt = (body.content || "").trim();
+   if (!prompt) return c.json({ error: "Content is required" }, 400);
 
-  const attachmentIds: string[] = Array.isArray(body.attachmentIds) ? body.attachmentIds.filter((x: any) => typeof x === "string").slice(0, 8) : [];
+   const attachmentIds: string[] = Array.isArray(body.attachmentIds) ? body.attachmentIds.filter((x: any) => typeof x === "string").slice(0, 8) : [];
 
-  const messages = db.getMessages(id);
-  if (messages.length === 0 && session.title === "New Chat") {
-    const autoTitle = prompt.slice(0, 30) + (prompt.length > 30 ? "..." : "");
-    db.updateSessionTitle(id, autoTitle);
-  }
+   // Slash-command skill invocation: "/name instructions" loads the skill's
+   // full body into that turn at prompt-build time. The transcript keeps only
+   // the plain instruction text; the linkage lives in the attachments table.
+   const slash = prompt.match(/^\/([a-z0-9][a-z0-9_-]*)(\s+|$)/);
+   if (slash) {
+     const skill = listSkills().find((s) => s.name === slash[1]);
+     if (skill) {
+       prompt = prompt.slice(slash[0].length).trim();
+       if (!prompt) return c.json({ error: "스킬 사용 시 실행할 지시문을 함께 입력하세요." }, 400);
+       let size = 0;
+       try {
+         size = fs.statSync(path.join(CONFIG.SKILLS_DIR, skill.name, "SKILL.md")).size;
+       } catch {}
+       const attId = "att_" + crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+       db.createAttachment({ id: attId, session_id: id, kind: "skill", name: skill.name, mime: "text/markdown", size, path: skill.name });
+       attachmentIds.push(attId);
+     }
+   }
 
-  coordinator.submit(id, prompt, attachmentIds);
-  return c.json({ status: "submitted" });
-});
+   const messages = db.getMessages(id);
+   if (messages.length === 0 && session.title === "New Chat") {
+     const autoTitle = prompt.slice(0, 30) + (prompt.length > 30 ? "..." : "");
+     db.updateSessionTitle(id, autoTitle);
+   }
+
+   coordinator.submit(id, prompt, attachmentIds);
+   return c.json({ status: "submitted" });
+ });
 
 // API: Edit Message and Re-run from that point (Message A -> B -> C: editing B updates B and regenerates B's answer)
 app.post("/api/sessions/:id/messages/:messageId/edit", async (c) => {

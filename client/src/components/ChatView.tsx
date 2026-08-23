@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Pencil, RotateCcw, ChevronDown, ChevronRight } from "lucide-react";
+import { Pencil, RotateCcw, ChevronDown, ChevronRight, Zap } from "lucide-react";
 import { useChatStore, Message } from "../store/useChatStore";
 import { MarkdownView } from "./MarkdownView";
 import { StepEntry } from "./Steps";
@@ -312,6 +312,10 @@ export const ChatView: React.FC = () => {
                                       >
                                         <img src={`/api/sessions/${currentSessionId}/files/${a.path}`} alt={a.name} className="max-h-44 max-w-[220px] object-cover" />
                                       </a>
+                                    ) : a.kind === "skill" ? (
+                                      <span key={a.path} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-violet-100 dark:bg-violet-950 text-[11px] font-mono text-violet-700 dark:text-violet-300">
+                                        <Zap className="w-3 h-3" /> {a.name}
+                                      </span>
                                     ) : (
                                       <span key={a.path} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-[11px] font-mono text-zinc-600 dark:text-zinc-300">
                                         {a.name} · {(a.size / 1024).toFixed(0)}KB

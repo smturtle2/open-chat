@@ -36,7 +36,7 @@ export interface AttachmentRecord {
   id: string;
   session_id: string;
   message_id: string | null;
-  kind: "image" | "file";
+  kind: "image" | "file" | "skill";
   name: string;
   mime: string;
   size: number;
@@ -300,7 +300,7 @@ export class AppDatabase {
 
   // Attachments: uploads land on disk first; the row is created unclaimed and
   // later bound to the user message that references it.
-  createAttachment(a: { id: string; session_id: string; kind: "image" | "file"; name: string; mime: string; size: number; path: string }): void {
+  createAttachment(a: { id: string; session_id: string; kind: "image" | "file" | "skill"; name: string; mime: string; size: number; path: string }): void {
     this.db
       .prepare("INSERT INTO attachments (id, session_id, message_id, kind, name, mime, size, path, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)")
       .run(a.id, a.session_id, a.kind, a.name, a.mime, a.size, a.path, new Date().toISOString());

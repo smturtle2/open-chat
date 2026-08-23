@@ -13,6 +13,42 @@ export const PromptInput: React.FC = () => {
   const [modelFilter, setModelFilter] = useState("");
   const filterRef = useRef<HTMLInputElement>(null);
 
+  // Slash-command autocomplete over installed skills.
+  const [skills, setSkills] = useState<{ name: string; description: string }[]>([]);
+  const [slashIdx, setSlashIdx] = useState(0);
+  const [dismissedToken, setDismissedToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/skills")
+      .then((r) => r.json())
+      .then((d) => setSkills(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }, []);
+
+  const slashMatch = /^\/([a-z0-9][a-z0-9_-]*)?$/.exec(content);
+  const token = slashMatch?.[1] ?? "";
+  const slashCandidates = slashMatch
+    ? skills.filter((s) => s.name.startsWith(token) && s.name !== token).slice(0, 8)
+    : [];
+  const exactSkill = token ? skills.find((s) => s.name === token) : undefined;
+  const slashOpen =
+    !!slashMatch && !exactSkill && token !== dismissedToken && slashCandidates.length > 0;
+
+  const handleChange = (v: string) => {
+    const prevToken = slashMatch?.[1];
+    const nextToken = /^\/([a-z0-9][a-z0-9_-]*)?$/.exec(v)?.[1];
+    if (prevToken !== nextToken) {
+      setDismissedToken(null);
+      setSlashIdx(0);
+    }
+    setContent(v);
+  };
+
+  const applySkill = (name: string) => {
+    handleChange(`/${name} `);
+    textareaRef.current?.focus();
+  };
+
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -57,6 +93,28 @@ export const PromptInput: React.FC = () => {
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
+    if (slashOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIdx((i) => Math.min(i + 1, slashCandidates.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIdx((i) => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === "Tab" || e.key === "Enter") {
+        e.preventDefault();
+        applySkill(slashCandidates[slashIdx].name);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDismissedToken(token);
+        return;
+      }
+    }
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       handleSubmit();
@@ -87,6 +145,24 @@ export const PromptInput: React.FC = () => {
         onDrop={handleDrop}
         onDragOver={(e) => e.preventDefault()}
       >
+        {/* Slash skill autocomplete */}
+        {slashOpen && (
+          <div className="absolute left-3 right-3 bottom-full mb-2 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-[#1e1e1e] shadow-lg overflow-hidden z-20">
+            {slashCandidates.map((s, i) => (
+              <button
+                key={s.name}
+                data-slash-item
+                onClick={() => applySkill(s.name)}
+                onMouseEnter={() => setSlashIdx(i)}
+                className={`w-full text-left px-3 py-2 transition-colors cursor-pointer ${i === slashIdx ? "bg-zinc-100 dark:bg-zinc-800" : ""}`}
+              >
+                <div className="text-sm font-mono text-violet-600 dark:text-violet-400">/{s.name}</div>
+                {s.description && <div className="text-[11px] text-zinc-400 truncate">{s.description}</div>}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Attachment chips */}
         {(hasAttachments || uploading) && (
           <div className="flex flex-wrap gap-2 px-3 pt-3">
@@ -116,7 +192,7 @@ export const PromptInput: React.FC = () => {
           <textarea
             ref={textareaRef}
             value={content}
-            onChange={(e) => setContent(e.target.value)}
+            onChange={(e) => handleChange(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Message OpenChat... (Ctrl+Enter to send, Enter for newline)"
             rows={1}

@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 export interface AttachmentMeta {
   id?: string;
-  kind: "image" | "file";
+  kind: "image" | "file" | "skill";
   name: string;
   path: string;
   size: number;

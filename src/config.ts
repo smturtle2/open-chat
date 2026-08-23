@@ -1,7 +1,10 @@
 import path from "node:path";
+import os from "node:os";
 import dotenv from "dotenv";
 
 dotenv.config();
+
+const DATA_ROOT = path.resolve(process.env.OPENCHAT_HOME || path.join(os.homedir(), ".openchat"));
 
 export const CONFIG = {
   PORT: parseInt(process.env.PORT || "3000", 10),
@@ -9,7 +12,10 @@ export const CONFIG = {
   LLM_MODEL: process.env.LLM_MODEL || "muse-spark-1.2-contributor",
   // Secret lives only in .env (dotenv). Never commit a fallback key here.
   LLM_API_KEY: process.env.LLM_API_KEY || "",
-  WORKSPACES_ROOT: path.resolve(process.env.OPENCHAT_WORKSPACE_ROOT || "/root/workspace"),
+  // Data root: everything mutable lives under ~/.openchat (workspace,
+  // skills). Individual paths stay env-overridable.
+  WORKSPACES_ROOT: path.resolve(process.env.OPENCHAT_WORKSPACE_ROOT || path.join(DATA_ROOT, "workspace")),
+  SKILLS_DIR: path.resolve(process.env.OPENCHAT_SKILLS_DIR || path.join(DATA_ROOT, "skills")),
   SANDBOX_IMAGE: process.env.OPENCHAT_SANDBOX_IMAGE || "openchat-sandbox:v2",
   SANDBOX_MEM_LIMIT: process.env.OPENCHAT_SANDBOX_MEM || "1g",
   SANDBOX_CPUS: process.env.OPENCHAT_SANDBOX_CPUS || "1.5",

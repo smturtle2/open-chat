@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { CONFIG } from "../config.js";
 import { db } from "../db/database.js";
 import { truncateDirectional, pageLines, type TruncateBias } from "./compactor.js";
+import { readSkillBody } from "./skills.js";
 
 import { promisify } from "node:util";
 
@@ -177,6 +178,9 @@ export class ToolRegistry {
     const runArgs = [
       "run", "-d", "--name", name,
       "-v", `${workspaceDir}:/workspace`,
+      // Skills root shared across sessions, writable: the agent can install
+      // new skills (git clone / curl) and they become live on next turn.
+      "-v", `${CONFIG.SKILLS_DIR}:/opt/skills`,
       "-v", `${__dirname}:/opt/agent:ro`,
       "-w", "/workspace",
       "--cap-drop", "ALL",
@@ -382,6 +386,20 @@ export class ToolRegistry {
           },
         },
       },
+      {
+        type: "function",
+        function: {
+          name: "load_skill",
+          description: "Load the full instructions of an installed skill from the available_skills list. Call this when a task matches a skill's description and before following its workflow. Returns the skill body plus its base directory and bundled files.",
+          parameters: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "The skill name exactly as listed in available_skills (e.g. pdf-processing)." },
+            },
+            required: ["name"],
+          },
+        },
+      },
     ];
   }
 
@@ -432,6 +450,25 @@ export class ToolRegistry {
         case "read_output":
           rawResult = this.readArchivedOutput(sessionId, args);
           break;
+
+        case "load_skill": {
+          const skillName = String(args.name || "").trim();
+          const skill = await readSkillBody(skillName);
+          if (!skill) {
+            rawResult = `Error: skill "${skillName}" not found. Check the exact name in available_skills.`;
+            break;
+          }
+          const fileList = skill.files.length
+            ? `\n\n<skill_files>\n${skill.files.map((f) => `<file>${path.join(skill.dir, f)}</file>`).join("\n")}\n</skill_files>`
+            : "";
+          rawResult =
+            `<skill_content name="${skillName}">\n\n` +
+            `Base directory for this skill: ${skill.dir}\n` +
+            `Relative paths in this skill are relative to this base directory.\n\n` +
+            `${skill.body}` +
+            `${fileList}\n\n</skill_content>`;
+          break;
+        }
 
         default:
           return `Error: Unknown tool "${name}"`;
