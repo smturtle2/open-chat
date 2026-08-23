@@ -18,7 +18,10 @@ export const CONFIG = {
   TOOL_ARCHIVE_MAX_CHARS: parseInt(process.env.OPENCHAT_TOOL_ARCHIVE_MAX || "262144", 10),
   TOOL_OUTPUT_KEEP_PER_SESSION: parseInt(process.env.OPENCHAT_TOOL_KEEP_N || "200", 10),
   TOOL_OUTPUT_MAX_AGE_DAYS: parseInt(process.env.OPENCHAT_TOOL_MAX_AGE_DAYS || "7", 10),
-  HISTORY_BUDGET_CHARS: parseInt(process.env.OPENCHAT_HISTORY_BUDGET || "120000", 10),
+  // History budget in estimated TOKENS (script-aware: CJK ~1.5 ch/tok,
+  // ASCII ~4 ch/tok). 145K leaves headroom under a ~150K total context for
+  // the system prompt, tool schemas, and the model's response.
+  HISTORY_BUDGET_TOKENS: parseInt(process.env.OPENCHAT_HISTORY_BUDGET_TOKENS || "145000", 10),
   HISTORY_RECENT_FULL_TOOLS: parseInt(process.env.OPENCHAT_RECENT_FULL_TOOLS || "8", 10),
   DB_PATH: path.resolve("/root/openchat/openchat.db"),
   MAX_AGENT_TURNS: parseInt(process.env.OPENCHAT_MAX_TURNS || "40", 10),

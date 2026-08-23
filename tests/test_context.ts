@@ -52,7 +52,7 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
     recs.push(call(`p${i}`, "bash", { cmd: "x".repeat(2000) }));
     recs.push(obs(`p${i}`, "y".repeat(20000)));
   }
-  const { messages, stats } = buildHistory(recs, { budgetChars: 50_000 });
+  const { messages, stats } = buildHistory(recs, { budgetTokens: 9_000 });
   check("pair: first message not a tool result", messages[0].role !== "tool", String(messages[0].role));
   // Every tool result's preceding assistant must carry its tool_call id.
   let pairsOk = true;
@@ -116,7 +116,7 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
 {
   const huge = obs("h", "z".repeat(300_000));
   const recs = [user("old"), call("o"), obs("o", "older"), user("new"), call("h"), huge];
-  const { messages } = buildHistory(recs, { budgetChars: 10_000 });
+  const { messages } = buildHistory(recs, { budgetTokens: 2_500 });
   check("oversize-last-unit: still present", messages.some((m) => m.content?.startsWith("zzz")));
 }
 
@@ -129,10 +129,9 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
   check("immutable inputs", recs.every((r, i) => r.content === before[i]));
 }
 
-// 10. REGRESSION (2026-08-23 incident): crossing the budget must never drop
-// user messages. Large tool-call args pushed real size past the budget while
-// content-only chars looked small; the old cut dropped the opening user unit,
-// producing a zero-user-message payload the gateway rejected with HTTP 400.
+// 10. REGRESSION (2026-08-23 incident): the CURRENT task's user message and
+// everything after it must survive any budget cut; older turns compete for
+// the remaining token budget newest-first.
 {
   const recs: HistoryRecord[] = [user("ORIGINAL TASK PROMPT")];
   for (let i = 0; i < 12; i++) {
@@ -140,12 +139,11 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
     recs.push(obs(`big${i}`, "ok"));
     if (i % 4 === 3) recs.push(user(`follow-up ${i}`));
   }
-  const { messages, stats } = buildHistory(recs, { budgetChars: 50_000 });
+  const { messages, stats } = buildHistory(recs, { budgetTokens: 9_000 });
   const allText = messages.map((m) => m.content ?? "").join("\n");
-  check("regression: first task prompt survives", allText.includes("ORIGINAL TASK PROMPT"));
-  check("regression: follow-up prompts survive", [3, 7, 11].every((i) => allText.includes(`follow-up ${i}`)));
-  check("regression: budget still cuts tool units", stats.unitsDropped > 0, `${stats.unitsDropped}`);
-  // Pair safety must hold in the surviving slice.
+  check("regression: current-task user survives", allText.includes("follow-up 11"));
+  check("regression: stale task prompt may be cut", !allText.includes("ORIGINAL TASK PROMPT"));
+  check("regression: budget still cuts old units", stats.unitsDropped > 0, `${stats.unitsDropped}`);
   let pairsOk = true;
   for (let i = 0; i < messages.length; i++) {
     if ((messages[i] as any).role === "tool") {
@@ -157,9 +155,18 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
   check("regression: pairs intact after cut", pairsOk);
 }
 
+// 10b. Generous budget keeps everything, including all user turns.
+{
+  const { messages } = buildHistory(
+    [user("old"), assistant("mid"), user("new")],
+    { budgetTokens: 100_000 }
+  );
+  check("generous: all users kept", messages.filter(m => m.role === "user").length === 2);
+}
+
 // 11. A session whose ONLY unit is one oversized user message keeps it.
 {
-  const { messages } = buildHistory([user("y".repeat(200_000))], { budgetChars: 10_000 });
+  const { messages } = buildHistory([user("y".repeat(200_000))], { budgetTokens: 2_500 });
   check("oversized lone user kept", messages.length === 1 && messages[0].content?.length === 200_000);
 }
 

@@ -20,9 +20,24 @@ export type HistoryRecord = {
 };
 
 export interface HistoryOptions {
-  budgetChars?: number;
+  /** Token ceiling for retained history (script-aware estimate). */
+  budgetTokens?: number;
   recentFullTools?: number;
   maxRecords?: number;
+}
+
+// Script-aware token estimation. Measured ratios vary by tokenizer
+// (English prose ~4-5 chars/token; Hangul shatters to ~1 token per syllable
+// block, corpus-measured 1.8-2.5 chars/token). We take conservative values so
+// real usage never overshoots the budget:
+//   ASCII/Latin/code: 4 chars per token, CJK (Hangul/Han/Kana/fullwidth): 1.5.
+const CJK_CHAR = /[\u1100-\u11FF\u2E80-\u9FFF\uAC00-\uD7A3\u3040-\u30FF\u3400-\u4DBF\uF900-\uFAFF\uFF00-\uFFEF]/g;
+
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  const cjk = (text.match(CJK_CHAR) || []).length;
+  const other = text.length - cjk;
+  return Math.ceil(other / 4 + cjk / 1.5);
 }
 
 export interface HistoryStats {
@@ -31,8 +46,8 @@ export interface HistoryStats {
   unitsTotal: number;
   unitsDropped: number;
   toolsCollapsed: number;
-  charsIn: number;
-  charsKept: number;
+  tokensIn: number;
+  tokensKept: number;
 }
 
 export interface BuiltMessage {
@@ -56,13 +71,17 @@ function parseToolCalls(raw: any): any[] {
 }
 
 // Unit: the smallest slice that may move as one piece across a budget cut.
+// Size is an estimated token count (content + serialized tool_call arguments,
+// which are billed like any other prompt text).
 type Unit = { recs: HistoryRecord[]; size: number };
+
+const OVERHEAD_TOKENS_PER_RECORD = Math.ceil(OVERHEAD_PER_RECORD / 4);
 
 function unitSize(recs: HistoryRecord[]): number {
   let n = 0;
   for (const r of recs) {
-    n += OVERHEAD_PER_RECORD + (r.content?.length ?? 0);
-    if (r.tool_calls) n += JSON.stringify(r.tool_calls).length;
+    n += OVERHEAD_TOKENS_PER_RECORD + estimateTokens(r.content ?? "");
+    if (r.tool_calls) n += estimateTokens(JSON.stringify(r.tool_calls));
   }
   return n;
 }
@@ -89,7 +108,7 @@ export function buildHistory(
   records: HistoryRecord[],
   opts: HistoryOptions = {}
 ): { messages: BuiltMessage[]; stats: HistoryStats } {
-  const budgetChars = opts.budgetChars ?? 120_000;
+  const budgetTokens = opts.budgetTokens ?? 145_000;
   const recentFullTools = Math.max(0, opts.recentFullTools ?? 8);
   const maxRecords = Math.max(1, opts.maxRecords ?? 200);
 
@@ -125,23 +144,27 @@ export function buildHistory(
 
   for (const u of units) u.size = unitSize(u.recs);
 
-  // ---- Pass 2: backward walk under the char budget ------------------------
-  // User-message units are NEVER budget-cut: they carry the task intent, and
-  // dropping them yields payloads with zero user messages, which gateways
-  // reject outright (observed: HTTP 400 "messages parameter is illegal").
-  // Non-user units compete for the budget newest-first; the newest unit is
-  // always kept even if it alone exceeds the budget.
+  // ---- Pass 2: current task verbatim, older history under token budget ----
+  // The CURRENT task starts at its (last) user message; that unit and
+  // everything after it are kept whole — they are live work, and dropping the
+  // active user message yields payloads with no user turn at all, which
+  // gateways reject outright (observed: HTTP 400 "messages parameter is
+  // illegal"). Everything OLDER competes newest-first under the token budget;
+  // the newest older unit is still kept even if it alone exceeds what's left.
   const isUserUnit = (u: Unit) => u.recs[0]?.role === "user";
-  const keep = new Array<boolean>(units.length).fill(false);
-  let spent = 0;
-  let keptCount = 0;
+  let currentUserIdx = -1;
   for (let i = units.length - 1; i >= 0; i--) {
-    if (isUserUnit(units[i])) {
-      keep[i] = true;
-      keptCount++;
-      continue;
-    }
-    if (spent < budgetChars) {
+    if (isUserUnit(units[i])) { currentUserIdx = i; break; }
+  }
+  const keep = new Array<boolean>(units.length).fill(false);
+  let keptCount = 0;
+  if (currentUserIdx !== -1) {
+    for (let i = currentUserIdx; i < units.length; i++) { keep[i] = true; keptCount++; }
+  }
+  let spent = 0;
+  for (let i = units.length - 1; i >= 0; i--) {
+    if (keep[i]) continue;
+    if (spent < budgetTokens) {
       keep[i] = true;
       keptCount++;
       spent += units[i].size;
@@ -196,8 +219,8 @@ export function buildHistory(
     }
   }
 
-  const charsIn = records.reduce((a, r) => a + (r.content?.length ?? 0), 0);
-  const charsKept = sliced.reduce((a, r) => a + (r.content?.length ?? 0), 0);
+  const tokensIn = units.reduce((a, u) => a + u.size, 0);
+  const tokensKept = keptUnits.reduce((a, u) => a + u.size, 0);
   return {
     messages,
     stats: {
@@ -206,8 +229,8 @@ export function buildHistory(
       unitsTotal: units.length,
       unitsDropped: units.length - keptCount,
       toolsCollapsed,
-      charsIn,
-      charsKept,
+      tokensIn,
+      tokensKept,
     },
   };
 }

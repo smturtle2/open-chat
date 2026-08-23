@@ -516,7 +516,7 @@ Your current working directory (CWD) is set to your sandbox root.
     };
 
     const { messages } = buildHistory(records, {
-      budgetChars: CONFIG.HISTORY_BUDGET_CHARS,
+      budgetTokens: CONFIG.HISTORY_BUDGET_TOKENS,
       recentFullTools: CONFIG.HISTORY_RECENT_FULL_TOOLS,
     });
 
