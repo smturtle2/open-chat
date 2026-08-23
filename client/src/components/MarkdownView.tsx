@@ -1,7 +1,8 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { marked, Renderer } from "marked";
 import hljs from "highlight.js";
 import katex from "katex";
+import DOMPurify from "dompurify";
 import { useChatStore } from "../store/useChatStore";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
@@ -10,8 +11,13 @@ interface MarkdownViewProps {
   content: string;
 }
 
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
   const { currentSessionId } = useChatStore();
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const renderedHtml = useMemo(() => {
     if (!content) return "";
@@ -57,11 +63,13 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
         }
       }
 
-      const titleAttr = title ? ` title="${title}"` : "";
-      return `<a href="${resolvedHref}" target="_blank" rel="noopener noreferrer"${titleAttr} class="text-zinc-900 dark:text-zinc-100 font-medium underline underline-offset-4 decoration-zinc-400 dark:decoration-zinc-500 hover:decoration-zinc-900 dark:hover:decoration-zinc-100 transition-colors break-all cursor-pointer">${text}</a>`;
+      const titleAttr = title ? ` title="${escapeAttr(String(title))}"` : "";
+      return `<a href="${escapeAttr(resolvedHref)}" target="_blank" rel="noopener noreferrer"${titleAttr} class="text-zinc-900 dark:text-zinc-100 font-medium underline underline-offset-4 decoration-zinc-400 dark:decoration-zinc-500 hover:decoration-zinc-900 dark:hover:decoration-zinc-100 transition-colors break-all cursor-pointer">${text}</a>`;
     };
 
-    // 3. Syntax-highlighted code blocks with Copy button
+    // 3. Syntax-highlighted code blocks with Copy button.
+    // The button carries the payload in data-code; the click handler is a
+    // delegated listener below (no inline JS — DOMPurify strips handlers).
     renderer.code = (token: any) => {
       const text = token.text || "";
       const lang = token.lang || "plaintext";
@@ -78,15 +86,11 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
       return `
         <div class="code-container my-2.5 rounded-lg overflow-hidden border border-zinc-800 bg-[#18181b] font-mono text-[13px]">
           <div class="flex items-center justify-between px-3 py-1.5 bg-[#202023] text-zinc-400 text-xs select-none">
-            <span class="font-medium text-[11px] text-zinc-300">${language}</span>
+            <span class="font-medium text-[11px] text-zinc-300">${escapeAttr(language)}</span>
             <button
+              type="button"
               class="copy-code-btn px-1.5 py-0.5 rounded text-[11px] hover:text-white hover:bg-zinc-700 transition-colors cursor-pointer"
               data-code="${encodedCode}"
-              onclick="
-                navigator.clipboard.writeText(decodeURIComponent(this.getAttribute('data-code')));
-                this.innerText = 'Copied!';
-                setTimeout(() => { this.innerText = 'Copy'; }, 2000);
-              "
             >
               <span>Copy</span>
             </button>
@@ -96,11 +100,36 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
       `;
     };
 
-    return marked.parse(processed, { renderer, gfm: true, breaks: true }) as string;
+    const rawHtml = marked.parse(processed, { renderer, gfm: true, breaks: true }) as string;
+
+    // Final gate: strip scripts/event handlers/javascript: URLs from model-
+    // or web-sourced HTML before it ever touches the DOM.
+    return DOMPurify.sanitize(rawHtml, {
+      ADD_ATTR: ["data-code", "target"],
+      FORBID_TAGS: ["style", "form", "iframe"],
+    });
   }, [content, currentSessionId]);
+
+  // Delegated copy-button handler for all code blocks in this message.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onClick = (e: MouseEvent) => {
+      const btn = (e.target as HTMLElement).closest?.(".copy-code-btn") as HTMLButtonElement | null;
+      if (!btn) return;
+      navigator.clipboard.writeText(decodeURIComponent(btn.getAttribute("data-code") || ""));
+      btn.innerText = "Copied!";
+      setTimeout(() => {
+        btn.innerText = "Copy";
+      }, 2000);
+    };
+    el.addEventListener("click", onClick);
+    return () => el.removeEventListener("click", onClick);
+  });
 
   return (
     <div
+      ref={containerRef}
       className="markdown-content text-sm leading-relaxed text-zinc-900 dark:text-zinc-100 space-y-2"
       dangerouslySetInnerHTML={{ __html: renderedHtml }}
     />

@@ -126,9 +126,22 @@ app.get("/api/sessions/:id/files/:filename{.+}", (c) => {
   const id = c.req.param("id");
   const filename = c.req.param("filename");
   const workspaceDir = path.join(CONFIG.WORKSPACES_ROOT, id);
-  const fullPath = path.resolve(workspaceDir, filename);
 
-  if (!fullPath.startsWith(workspaceDir) || !fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
+  // Traversal + symlink-safe containment check: resolve real paths and
+  // require the target to sit strictly inside the session workspace.
+  let fullReal: string;
+  let wsReal: string;
+  try {
+    fullReal = fs.realpathSync(path.resolve(workspaceDir, filename));
+    wsReal = fs.realpathSync(workspaceDir);
+  } catch {
+    return c.text("File not found", 404);
+  }
+  const rel = path.relative(wsReal, fullReal);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    return c.text("File not found", 404);
+  }
+  if (!fs.existsSync(fullReal) || !fs.statSync(fullReal).isFile()) {
     return c.text("File not found", 404);
   }
 
@@ -153,12 +166,12 @@ app.get("/api/sessions/:id/files/:filename{.+}", (c) => {
     ".zip": "application/zip",
   };
 
-  const ext = path.extname(fullPath).toLowerCase();
+  const ext = path.extname(fullReal).toLowerCase();
   const contentType = mimeTypes[ext] || "application/octet-stream";
-  const fileData = fs.readFileSync(fullPath);
+  const fileData = fs.readFileSync(fullReal);
 
   c.header("Content-Type", contentType);
-  c.header("Content-Disposition", `inline; filename="${path.basename(fullPath)}"`);
+  c.header("Content-Disposition", `inline; filename="${path.basename(fullReal)}"`);
   return c.body(fileData);
 });
 
