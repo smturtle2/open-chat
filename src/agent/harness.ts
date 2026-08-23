@@ -38,6 +38,12 @@ export class AgentHarness {
     const maxTurns = CONFIG.MAX_AGENT_TURNS;
     const maxConsecutiveErrors = 5;
     let consecutiveErrors = 0;
+    // Empty-completion guard: upstream instability can terminate a stream
+    // after reasoning only — no content, no tool_calls (observed live).
+    // Treating that as "final answer" silently ends the task with an
+    // invisible message, which looks like a frozen chat from the UI side.
+    let emptyCompletions = 0;
+    const maxEmptyCompletions = 2;
     const sessionWorkspace = path.join(CONFIG.WORKSPACES_ROOT, sessionId);
 
     // Autonomous loop: runs until the model delivers a final answer without tool calls, hits the turn cap, or is aborted.
@@ -395,6 +401,26 @@ export class AgentHarness {
       // Clean empty content strings
       const sanitizedContent = currentContent.trim() || undefined;
       const sanitizedThought = currentThought.trim() || undefined;
+
+      // An empty completion — no text and no tool calls — is a dead round,
+      // not a finished task. Retry the round (history was not touched yet);
+      // after repeated failures surface a visible error instead of ending
+      // the turn with an invisible answer.
+      if (generatedToolCalls.length === 0 && !sanitizedContent) {
+        flushDeltas();
+        if (emptyCompletions < maxEmptyCompletions) {
+          emptyCompletions++;
+          console.warn(`[Harness] Empty completion (round ${turn}, attempt ${emptyCompletions}/${maxEmptyCompletions}) — retrying`);
+          db.appendEvent(sessionId, "empty_response_retry", { attempt: emptyCompletions });
+          turn--;
+          continue;
+        }
+        emptyCompletions = 0;
+        db.appendEvent(sessionId, "error", { message: "모델이 빈 응답을 반복했습니다. 메시지를 다시 보내거나 재생성해 주세요." });
+        db.appendEvent(sessionId, "turn_completed", { turn });
+        break;
+      }
+      emptyCompletions = 0;
 
       // Save assistant turn
       const assistantMsgId = "msg_" + Math.random().toString(36).substring(2, 11);
