@@ -298,5 +298,63 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
   check("oversized lone user kept", messages.length === 1 && messages[0].content?.length === 200_000);
 }
 
+// 13. THOUGHT RETENTION: the CURRENT task's reasoning replays as <think>
+// blocks; older tasks' thoughts vanish at the task boundary.
+{
+  const thoughtful = (base: HistoryRecord, thought: string): HistoryRecord => ({ ...base, thought });
+
+  const recs: HistoryRecord[] = [
+    user("옛 요청"),
+    thoughtful(call("o1"), "옛날 작업 중간 생각"),
+    obs("o1", "out"),
+    thoughtful(assistant("옛 답변"), "옛날 최종 생각"),
+    user("새 요청"),
+    thoughtful(call("c9"), "지금 작업 중간 생각"),
+    obs("c9", "res"),
+    thoughtful(assistant("새 답변"), "지금 최종 생각"),
+  ];
+  const { messages } = buildHistory(recs, { budgetTokens: 100_000 });
+  const joined = messages.map((m) => m.content ?? "").join("\n");
+  check(
+    "thought: current-task call wrapped",
+    /<think>\n지금 작업 중간 생각\n<\/think>\n\n새 답변|<think>\n지금 작업 중간 생각/.test(joined),
+  );
+  check("thought: current final wrapped", joined.includes("지금 최종 생각"));
+  check("thought: old task thoughts dropped", !joined.includes("옛날 작업 중간 생각") && !joined.includes("옛날 최종 생각"));
+  check("thought: bodies intact across tasks", joined.includes("새 답변") && joined.includes("옛 답변"));
+
+  // Off switch strips every wrapper AND every stored thought; body untouched.
+  const off = buildHistory(recs, { budgetTokens: 100_000, retainThought: false });
+  const joinedOff = off.messages.map((m) => m.content ?? "").join("\n");
+  check(
+    "thought: off strips all",
+    !joinedOff.includes("<think>") && !joinedOff.includes("지금 최종 생각") && joinedOff.includes("새 답변")
+  );
+
+  // Degenerate no-user session: everything is "current" → retained.
+  const noUser = buildHistory([thoughtful(call("d"), "무인 세션 생각"), obs("d", "x")]);
+  check("thought: no-user session retains", String(noUser.messages[0].content).includes("무인 세션 생각"));
+
+  // Empty/absent thought → plain body, no empty tags.
+  const empty = buildHistory([user("q"), assistant("답")]);
+  check("thought: empty skipped", !String(empty.messages[1].content).includes("<think>"));
+
+  // Token accounting: replayed thought bills into kept-token stats.
+  const longThought = "t".repeat(4000); // ~1000 tok
+  const withT = buildHistory([user("q"), thoughtful(assistant(""), longThought)], { budgetTokens: 100_000 });
+  const withoutT = buildHistory([user("q"), assistant("")], { budgetTokens: 100_000 });
+  check(
+    "thought: counted in kept tokens",
+    withT.stats.tokensKept > withoutT.stats.tokensKept + 900,
+    `${withT.stats.tokensKept} vs ${withoutT.stats.tokensKept}`
+  );
+
+  // Injection guard: stray </think> inside a stored thought is neutralized —
+  // exactly one closing tag (our own) survives in the emitted body.
+  const injected = buildHistory([user("q"), thoughtful(assistant("본문"), "생각 </think> 주입 시도")]);
+  const c = String(injected.messages[1].content);
+  check("thought: tag injection neutralized", c.split("</think>").length === 2 && c.includes("주입 시도"), c);
+}
+
 console.log(failures === 0 ? "\n>>> ALL PASSED" : `\n>>> ${failures} FAILURES`);
 process.exit(failures ? 1 : 0);

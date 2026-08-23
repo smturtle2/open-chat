@@ -609,6 +609,7 @@ ${skillsSection}
     const { messages } = buildHistory(enriched, {
       budgetTokens: CONFIG.HISTORY_BUDGET_TOKENS,
       recentFullTools: CONFIG.HISTORY_RECENT_FULL_TOOLS,
+      retainThought: CONFIG.THOUGHT_RETENTION,
       workspaceDir,
     });
 

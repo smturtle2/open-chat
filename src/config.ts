@@ -29,6 +29,9 @@ export const CONFIG = {
   // the system prompt, tool schemas, and the model's response.
   HISTORY_BUDGET_TOKENS: parseInt(process.env.OPENCHAT_HISTORY_BUDGET_TOKENS || "145000", 10),
   HISTORY_RECENT_FULL_TOOLS: parseInt(process.env.OPENCHAT_RECENT_FULL_TOOLS || "8", 10),
+  // Replay the current task's reasoning (<think>) in history. Set
+  // OPENCHAT_THOUGHT_RETENTION=off to fall back to dropping all thoughts.
+  THOUGHT_RETENTION: (process.env.OPENCHAT_THOUGHT_RETENTION || "task") !== "off",
   DB_PATH: path.resolve("/root/openchat/openchat.db"),
   MAX_AGENT_TURNS: parseInt(process.env.OPENCHAT_MAX_TURNS || "40", 10),
 };
