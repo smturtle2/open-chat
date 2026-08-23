@@ -18,25 +18,16 @@ function generateCallId(): string {
 
 export class AgentHarness {
   async runAutonomousLoop(sessionId: string, userPrompt: string, signal?: AbortSignal, model?: string, attachmentIds: string[] = []) {
-    // 1. Record new user message. Attachment markers are baked into the stored
-    // content so every replay shows the model where the files live; the UI
-    // renders thumbnails from the structured attachments payload instead.
+    // 1. Record new user message — plain text only. Attachment markers are a
+    // PROMPT-construction concern: they get appended in prepareMessages from
+    // the attachments table, never stored in the transcript the user sees.
     const userMsgId = "msg_" + Math.random().toString(36).substring(2, 11);
     const claimed = db.claimAttachments(userMsgId, sessionId, attachmentIds);
-    const markers = claimed
-      .map((a) => {
-        const kb = a.size >= 1024 ? `${(a.size / 1024).toFixed(0)}KB` : `${a.size}B`;
-        return a.kind === "image"
-          ? `[첨부 이미지: ${a.path} · ${kb}]`
-          : `[첨부 파일: ${a.path} · ${kb}]`;
-      })
-      .join("\n");
-    const fullContent = markers ? `${userPrompt}\n\n${markers}` : userPrompt;
     db.addMessage({
       id: userMsgId,
       session_id: sessionId,
       role: "user",
-      content: fullContent,
+      content: userPrompt,
     });
     db.appendEvent(sessionId, "user_message", {
       id: userMsgId,
@@ -523,6 +514,22 @@ export class AgentHarness {
   }
 
   private prepareMessages(records: any[], workspaceDir: string): any[] {
+    // Attachment markers are appended here — prompt-only decoration. The
+    // transcript stays clean; every replay still tells the model where its
+    // files live.
+    const enriched = records.map((r) => {
+      if (r.role !== "user" || !r.id) return r;
+      const atts = db.getMessageAttachments(r.id);
+      if (atts.length === 0) return r;
+      const markers = atts
+        .map((a) => {
+          const kb = a.size >= 1024 ? `${(a.size / 1024).toFixed(0)}KB` : `${a.size}B`;
+          return a.kind === "image" ? `[첨부 이미지: ${a.path} · ${kb}]` : `[첨부 파일: ${a.path} · ${kb}]`;
+        })
+        .join("\n");
+      return { ...r, content: `${r.content ?? ""}\n\n${markers}` };
+    });
+
     const systemPrompt = {
       role: "system",
       content: `You are OpenChat, an elite autonomous AI software engineering agent.
@@ -560,7 +567,7 @@ Your current working directory (CWD) is set to your sandbox root.
 - \`view_image\`: Look at an image file (user uploads in uploads/ or generated images). When a message carries an attachment marker like [첨부 이미지: uploads/x.png · 240KB], call view_image with that path to actually see it before reasoning about its content.`,
     };
 
-    const { messages } = buildHistory(records, {
+    const { messages } = buildHistory(enriched, {
       budgetTokens: CONFIG.HISTORY_BUDGET_TOKENS,
       recentFullTools: CONFIG.HISTORY_RECENT_FULL_TOOLS,
       workspaceDir,
