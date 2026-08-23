@@ -61,7 +61,7 @@ fs.mkdirSync(path.join(skillsRoot, "orphan-dir"), { recursive: true }); // no SK
   check("body: loaded", !!body);
   check("body: frontmatter stripped", !body!.body.includes("wrong-name") && body!.body.includes("# Alpha workflow"));
   check("body: files listed incl. nested", body!.files.includes("scripts/go.py"), body!.files.join(","));
-  check("body: base dir points at skill root", body!.dir === path.join(skillsRoot, "alpha-test"));
+  check("body: base dir is the container-mapped skill root", body!.dir === "/opt/skills/alpha-test", body!.dir);
 
   check("confinement: unknown skill rejected", (await readSkillBody("does-not-exist")) === null);
   check("confinement: traversal rejected", (await readSkillBody("..")) === null && (await readSkillBody("etc-passwd")) === null);
@@ -94,7 +94,7 @@ fs.mkdirSync(path.join(skillsRoot, "orphan-dir"), { recursive: true }); // no SK
   const overridden = listSkills().find((s) => s.name === "skill-installer")!;
   check("override: user skill wins in listing", overridden.builtin !== true && overridden.description === "USER OVERRIDE");
   const body = await readSkillBody("skill-installer");
-  check("override: user copy wins on read", body!.dir === path.join(skillsRoot, "skill-installer"));
+  check("override: user copy wins on read", body!.dir === "/opt/skills/skill-installer");
   fs.rmSync(path.join(skillsRoot, "skill-installer"), { recursive: true, force: true });
 }
 
@@ -128,6 +128,13 @@ fs.mkdirSync(path.join(skillsRoot, "orphan-dir"), { recursive: true }); // no SK
     const msgs2 = await (harness as any).prepareMessages(db.getMessages(sid) as any[], "/tmp/x");
     const u2 = msgs2.find((m: any) => m.role === "user");
     check("enrich: vanished skill degrades to notice", u2.content.includes("[스킬 유실: vanished]"));
+
+    // sandbox-path discipline: model-facing surfaces must never leak host paths
+    check("enrich: base dir is container path", user.content.includes("Base directory for this skill: /opt/skills/") && !user.content.includes("/root/.openchat"));
+    check("prompt: no host paths leaked", !sys.includes("/root/") && sys.includes("/opt/skills/"));
+    const { tools } = await import("../src/agent/tools");
+    const loaded = await tools.execute("load_skill", { name: "skill-installer" }, sid);
+    check("load_skill: base dir is container path", String(loaded).includes("Base directory for this skill: /opt/skills/.builtin/skill-installer"), String(loaded).slice(0, 90));
   } finally {
     db.deleteSession(sid);
   }

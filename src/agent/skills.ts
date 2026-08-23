@@ -128,6 +128,15 @@ export interface SkillBody {
 
 const MAX_SKILL_BODY_BYTES = 256 * 1024;
 
+// The skills root is bind-mounted at /opt/skills in every session container;
+// the model can ONLY act through sandbox tools, so exposed paths must be
+// container-relative, never host paths like ~/.openchat/...
+function containerPath(absDir: string): string {
+  const rel = path.relative(CONFIG.SKILLS_DIR, absDir);
+  if (!rel || rel.startsWith("..")) return `/opt/skills`;
+  return `/opt/skills/${rel.split(path.sep).join("/")}`;
+}
+
 async function readFrom(root: string, name: string): Promise<SkillBody | null> {
   const rootReal = await fsp.realpath(root).catch(() => null);
   if (!rootReal) return null;
@@ -161,7 +170,7 @@ async function readFrom(root: string, name: string): Promise<SkillBody | null> {
   // Strip frontmatter from the returned body — metadata already lives in
   // the system prompt listing.
   const stripped = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
-  return { body: stripped.trim(), dir: real, files };
+  return { body: stripped.trim(), dir: containerPath(real), files };
 }
 
 // Loads SKILL.md for an installed skill, user copy first. The requested name
