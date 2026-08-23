@@ -1,5 +1,6 @@
 // Unit tests for the skills module: discovery, frontmatter parsing, confined
-// body reads, and prepareMessages enrichment (slash-invoked skill injection).
+// body reads, and prompt build (slash hints pass through verbatim; the model
+// loads skills itself via load_skill).
 // Run: OPENCHAT_SKILLS_DIR is created fresh in tmp — npx tsx tests/test_skills.ts
 import fs from "node:fs";
 import os from "node:os";
@@ -98,16 +99,15 @@ fs.mkdirSync(path.join(skillsRoot, "orphan-dir"), { recursive: true }); // no SK
   fs.rmSync(path.join(skillsRoot, "skill-installer"), { recursive: true, force: true });
 }
 
-// -- prompt enrichment (slash-invoked skill rides the user turn) ------------
+// -- prompt build: slash hints stay verbatim, model self-serves via load_skill --
 {
   const sid = "chat_sk1lltest";
   db.createSession(sid, "skill test");
   try {
     const uid = "msg_sk1llu1d";
-    db.addMessage({ id: uid, session_id: sid, role: "user", content: "알파 실행해줘" });
-    db.createAttachment({ id: "att_skl00d1", session_id: sid, kind: "skill", name: "alpha-test", mime: "text/markdown", size: 10, path: "alpha-test" });
+    db.addMessage({ id: uid, session_id: sid, role: "user", content: "/alpha-test 알파 실행해줘" });
     db.createAttachment({ id: "att_img00d2", session_id: sid, kind: "image", name: "pic.png", mime: "image/png", size: 2048, path: "uploads/pic.png" });
-    db.claimAttachments(uid, sid, ["att_skl00d1", "att_img00d2"]);
+    db.claimAttachments(uid, sid, ["att_img00d2"]);
 
     const records = db.getMessages(sid) as any[];
     const msgs = await (harness as any).prepareMessages(records, path.join(os.tmpdir(), "ws-x"));
@@ -115,22 +115,15 @@ fs.mkdirSync(path.join(skillsRoot, "orphan-dir"), { recursive: true }); // no SK
     const sys = msgs[0].content as string;
     check("prompt: available_skills section present", sys.includes("<available_skills>") && sys.includes("<name>alpha-test</name>"));
     check("prompt: writable install hint present", sys.includes("/opt/skills"));
+    check("prompt: slash→load_skill hint present", sys.includes("/<name>") && sys.includes("load_skill"));
 
     const user = msgs.find((m: any) => m.role === "user");
-    check("enrich: transcript text untouched in DB", records[0].content === "알파 실행해줘");
-    check("enrich: skill content injected", user.content.includes('<skill_content name="alpha-test">') && user.content.includes("# Alpha workflow"));
-    check("enrich: attachment marker coexists", user.content.includes("[첨부 이미지: uploads/pic.png · 2KB]"));
-    check("enrich: order = text → markers → skill block", user.content.indexOf("알파") < user.content.indexOf("[첨부 이미지") && user.content.indexOf("[첨부 이미지") < user.content.indexOf("<skill_content"));
-
-    // missing skill degrades visibly
-    db.createAttachment({ id: "att_sklbad3", session_id: sid, kind: "skill", name: "vanished", mime: "text/markdown", size: 0, path: "vanished" });
-    db.claimAttachments(uid, sid, ["att_sklbad3"]);
-    const msgs2 = await (harness as any).prepareMessages(db.getMessages(sid) as any[], "/tmp/x");
-    const u2 = msgs2.find((m: any) => m.role === "user");
-    check("enrich: vanished skill degrades to notice", u2.content.includes("[스킬 유실: vanished]"));
+    check("enrich: slash text passes through verbatim", String(user.content).startsWith("/alpha-test 알파 실행해줘"));
+    check("enrich: no skill body injected server-side", !String(user.content).includes("<skill_content"));
+    check("enrich: attachment marker coexists", String(user.content).includes("[첨부 이미지: uploads/pic.png · 2KB]"));
+    check("enrich: order = slash token → markers", String(user.content).indexOf("/alpha-test") < String(user.content).indexOf("[첨부 이미지"));
 
     // sandbox-path discipline: model-facing surfaces must never leak host paths
-    check("enrich: base dir is container path", user.content.includes("Base directory for this skill: /opt/skills/") && !user.content.includes("/root/.openchat"));
     check("prompt: no host paths leaked", !sys.includes("/root/") && sys.includes("/opt/skills/"));
     const { tools } = await import("../src/agent/tools");
     const loaded = await tools.execute("load_skill", { name: "skill-installer" }, sid);

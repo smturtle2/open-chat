@@ -243,29 +243,14 @@ app.post("/api/sessions/:id/attachments", async (c) => {
    if (!session) return c.json({ error: "Session not found" }, 404);
 
    const body = await c.req.json().catch(() => ({}));
-   let prompt = (body.content || "").trim();
+   const prompt = (body.content || "").trim();
    if (!prompt) return c.json({ error: "Content is required" }, 400);
 
    const attachmentIds: string[] = Array.isArray(body.attachmentIds) ? body.attachmentIds.filter((x: any) => typeof x === "string").slice(0, 8) : [];
 
-   // Slash-command skill invocation: "/name instructions" loads the skill's
-   // full body into that turn at prompt-build time. The transcript keeps only
-   // the plain instruction text; the linkage lives in the attachments table.
-   const slash = prompt.match(/^\/([a-z0-9][a-z0-9_-]*)(\s+|$)/);
-   if (slash) {
-     const skill = listSkills().find((s) => s.name === slash[1]);
-     if (skill) {
-       prompt = prompt.slice(slash[0].length).trim();
-       if (!prompt) return c.json({ error: "스킬 사용 시 실행할 지시문을 함께 입력하세요." }, 400);
-       let size = 0;
-       try {
-         size = fs.statSync(path.join(CONFIG.SKILLS_DIR, skill.name, "SKILL.md")).size;
-       } catch {}
-       const attId = "att_" + crypto.randomUUID().replace(/-/g, "").slice(0, 16);
-       db.createAttachment({ id: attId, session_id: id, kind: "skill", name: skill.name, mime: "text/markdown", size, path: skill.name });
-       attachmentIds.push(attId);
-     }
-   }
+   // Slash skill hints ("/name instructions") are stored VERBATIM in the
+   // transcript — the model resolves them itself via load_skill at turn time.
+   // Nothing is stripped or injected here.
 
    const messages = db.getMessages(id);
    if (messages.length === 0 && session.title === "New Chat") {

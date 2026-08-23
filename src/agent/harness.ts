@@ -5,7 +5,7 @@ import { tools } from "./tools.js";
 import { extractJsonObjects, parseToolArguments } from "./jsonUtils.js";
 import { buildHistory } from "./context.js";
 import { serializeObservation } from "./tools.js";
-import { listSkills, readSkillBody } from "./skills.js";
+import { listSkills } from "./skills.js";
 
 type StreamingToolCall = {
   id: string;
@@ -532,21 +532,8 @@ export class AgentHarness {
           .join("\n");
         let content = `${r.content ?? ""}`;
         if (markers) content += `\n\n${markers}`;
-        // Slash-invoked skills ride in the user turn as wrapped instruction
-        // blocks; the transcript itself stays clean (prompt-only decoration).
-        for (const a of atts.filter((x) => x.kind === "skill")) {
-          const s = await readSkillBody(a.path);
-          if (!s) {
-            content += `\n\n[스킬 유실: ${a.path}]`;
-            continue;
-          }
-          content +=
-            `\n\n<skill_content name="${a.path}">\n` +
-            `Base directory for this skill: ${s.dir}\n` +
-            `Relative paths in this skill are relative to this base directory.\n\n` +
-            `${s.body}\n` +
-            `</skill_content>`;
-        }
+        // Slash skill hints ("/name ...") stay verbatim in the transcript;
+        // the model resolves them via load_skill (see skillsSection hint).
         return { ...r, content };
       })
     );
@@ -565,6 +552,9 @@ ${skills.map((s) => `<skill>\n<name>${s.name}</name>\n<description>${s.descripti
 Skills live under /opt/skills in your sandbox, which is WRITABLE: install new
 skills with the skill-installer skill (or by creating <name>/SKILL.md there
 yourself); they become available from your next turn.
+When a user message starts with /<name> and <name> matches an installed
+skill above, that names the skill to use: call load_skill for it FIRST,
+then follow its instructions for the rest of the message.
 `;
 
     const systemPrompt = {

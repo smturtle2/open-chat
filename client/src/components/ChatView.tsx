@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Pencil, RotateCcw, ChevronDown, ChevronRight, Zap } from "lucide-react";
+import { Pencil, RotateCcw, ChevronDown, ChevronRight } from "lucide-react";
 import { useChatStore, Message } from "../store/useChatStore";
 import { MarkdownView } from "./MarkdownView";
 import { StepEntry } from "./Steps";
@@ -312,11 +312,7 @@ export const ChatView: React.FC = () => {
                                       >
                                         <img src={`/api/sessions/${currentSessionId}/files/${a.path}`} alt={a.name} className="max-h-44 max-w-[220px] object-cover" />
                                       </a>
-                                    ) : a.kind === "skill" ? (
-                                      <span key={a.path} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-violet-100 dark:bg-violet-950 text-[11px] font-mono text-violet-700 dark:text-violet-300">
-                                        <Zap className="w-3 h-3" /> {a.name}
-                                      </span>
-                                    ) : (
+                                    ) : a.kind === "skill" ? null : (
                                       <span key={a.path} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-[11px] font-mono text-zinc-600 dark:text-zinc-300">
                                         {a.name} · {(a.size / 1024).toFixed(0)}KB
                                       </span>
@@ -325,7 +321,19 @@ export const ChatView: React.FC = () => {
                                 </div>
                               )}
                               <div className="bg-[#f4f4f5] dark:bg-[#27272a] text-zinc-900 dark:text-zinc-100 px-4 py-2.5 rounded-2xl text-[15px] leading-relaxed whitespace-pre-wrap">
-                                <MarkdownView content={turn.userMsg.content} />
+                                <MarkdownView
+                                  content={(() => {
+                                    // Leading "/skill-name" becomes an inline
+                                    // violet pill INSIDE the markdown flow (see
+                                    // .skill-token in index.css). The stored
+                                    // text stays plain for editing.
+                                    const c = turn.userMsg.content;
+                                    const m = c.match(/^\/([a-z0-9][a-z0-9_-]*)(?=\s|$)/);
+                                    if (!m) return c;
+                                    const rest = c.slice(m[0].length).replace(/^\s+/, "");
+                                    return `<span class="skill-token">${m[1]}</span>${rest ? " " + rest : ""}`;
+                                  })()}
+                                />
                               </div>
 
                               {/* Action Buttons below User Bubble */}
