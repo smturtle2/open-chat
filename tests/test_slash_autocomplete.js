@@ -53,6 +53,20 @@ import { chromium } from 'playwright';
   await page.waitForTimeout(150);
   check('Escape dismisses dropdown', (await items.count()) === 0);
 
+  // 6. Skills installed mid-session appear WITHOUT page reload
+  const fs = await import('fs');
+  fs.mkdirSync('/root/.openchat/skills/zz-fresh-skill', { recursive: true });
+  fs.writeFileSync(
+    '/root/.openchat/skills/zz-fresh-skill/SKILL.md',
+    '---\nname: zz-fresh-skill\ndescription: Installed while the client was open.\n---\nFresh.\n'
+  );
+  await textarea.fill('');
+  await textarea.pressSequentially('/', { delay: 30 });
+  await page.waitForTimeout(500); // refetch on slash start + render
+  const names = await items.allInnerTexts();
+  check('mid-session install appears in dropdown', names.some((n) => n.includes('zz-fresh-skill')), `items=[${names.map((n) => n.split('\n')[0]).join(', ')}]`);
+  fs.rmSync('/root/.openchat/skills/zz-fresh-skill', { recursive: true, force: true });
+
   await page.screenshot({ path: '/root/openchat/screenshot_slash.png' });
   console.log(failures === 0 ? '\n>>> ALL CHECKS PASSED <<<' : `\n>>> ${failures} CHECKS FAILED <<<`);
   await browser.close();

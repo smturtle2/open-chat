@@ -18,12 +18,23 @@ export const PromptInput: React.FC = () => {
   const [slashIdx, setSlashIdx] = useState(0);
   const [dismissedToken, setDismissedToken] = useState<string | null>(null);
 
-  useEffect(() => {
+  // Skills can appear at any time (the model installs them mid-session), so
+  // re-fetch whenever the user STARTS a slash query instead of only on mount.
+  const refreshSkills = React.useCallback(() => {
     fetch("/api/skills")
       .then((r) => r.json())
       .then((d) => setSkills(Array.isArray(d) ? d : []))
       .catch(() => {});
   }, []);
+  useEffect(() => {
+    refreshSkills();
+  }, [refreshSkills]);
+  const slashTyping = content.startsWith("/");
+  const wasSlashTyping = useRef(false);
+  useEffect(() => {
+    if (slashTyping && !wasSlashTyping.current) refreshSkills();
+    wasSlashTyping.current = slashTyping;
+  }, [slashTyping, refreshSkills]);
 
   const slashMatch = /^\/([a-z0-9][a-z0-9_-]*)?$/.exec(content);
   const token = slashMatch?.[1] ?? "";
@@ -35,12 +46,10 @@ export const PromptInput: React.FC = () => {
     !!slashMatch && !exactSkill && token !== dismissedToken && slashCandidates.length > 0;
 
   const handleChange = (v: string) => {
-    const prevToken = slashMatch?.[1];
-    const nextToken = /^\/([a-z0-9][a-z0-9_-]*)?$/.exec(v)?.[1];
-    if (prevToken !== nextToken) {
-      setDismissedToken(null);
-      setSlashIdx(0);
-    }
+    // Any edit clears a previous Escape-dismissal; Esc only silences the
+    // CURRENT dropdown until the user types again.
+    setDismissedToken(null);
+    setSlashIdx(0);
     setContent(v);
   };
 
