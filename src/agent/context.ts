@@ -144,30 +144,45 @@ export function buildHistory(
 
   for (const u of units) u.size = unitSize(u.recs);
 
-  // ---- Pass 2: current task verbatim, older history under token budget ----
-  // The CURRENT task starts at its (last) user message; that unit and
-  // everything after it are kept whole — they are live work, and dropping the
-  // active user message yields payloads with no user turn at all, which
-  // gateways reject outright (observed: HTTP 400 "messages parameter is
-  // illegal"). Everything OLDER competes newest-first under the token budget;
-  // the newest older unit is still kept even if it alone exceeds what's left.
+  // ---- Pass 2: whole-TASK retention ---------------------------------------
+  // History is cut at task boundaries, never mid-story. A task = one user
+  // message plus everything the agent did until the next user message. The
+  // CURRENT task (last user message onward) is kept verbatim; older tasks
+  // are kept complete, newest-first, while their total size fits the token
+  // budget. The first older task that does not fit — and everything older
+  // than it — disappears together, so the replayed story is always a
+  // contiguous run of complete exchanges. (Partial per-unit keeps made the
+  // model see orphan answers whose questions were gone.)
   const isUserUnit = (u: Unit) => u.recs[0]?.role === "user";
-  let currentUserIdx = -1;
-  for (let i = units.length - 1; i >= 0; i--) {
-    if (isUserUnit(units[i])) { currentUserIdx = i; break; }
-  }
+  const taskStarts: number[] = [];
+  units.forEach((u, i) => {
+    if (isUserUnit(u)) taskStarts.push(i);
+  });
+
   const keep = new Array<boolean>(units.length).fill(false);
   let keptCount = 0;
-  if (currentUserIdx !== -1) {
-    for (let i = currentUserIdx; i < units.length; i++) { keep[i] = true; keptCount++; }
-  }
-  let spent = 0;
-  for (let i = units.length - 1; i >= 0; i--) {
-    if (keep[i]) continue;
-    if (spent < budgetTokens) {
-      keep[i] = true;
-      keptCount++;
-      spent += units[i].size;
+
+  if (taskStarts.length === 0) {
+    // No user message at all (degenerate): keep everything.
+    for (let i = 0; i < units.length; i++) { keep[i] = true; keptCount++; }
+  } else {
+    // Preamble before the first user task: always kept.
+    for (let i = 0; i < taskStarts[0]; i++) { keep[i] = true; keptCount++; }
+
+    // Current task: last taskStart → end, verbatim.
+    const currentStart = taskStarts[taskStarts.length - 1];
+    for (let i = currentStart; i < units.length; i++) { keep[i] = true; keptCount++; }
+
+    // Older tasks, newest-first, whole-or-nothing against the budget.
+    let spent = 0;
+    for (let t = taskStarts.length - 2; t >= 0; t--) {
+      const startIdx = taskStarts[t];
+      const endIdx = taskStarts[t + 1] - 1;
+      let size = 0;
+      for (let i = startIdx; i <= endIdx; i++) size += units[i].size;
+      if (spent + size > budgetTokens) break;
+      for (let i = startIdx; i <= endIdx; i++) { keep[i] = true; keptCount++; }
+      spent += size;
     }
   }
   const keptUnits = units.filter((_, i) => keep[i]);

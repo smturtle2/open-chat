@@ -164,6 +164,40 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
   check("generous: all users kept", messages.filter(m => m.role === "user").length === 2);
 }
 
+// 10c. FLOW PRESERVATION: old tasks are kept WHOLE, newest-first — never
+// partially. Surviving old turns must form a contiguous suffix of complete
+// exchanges (user + its assistant work together), matching what actually
+// happened.
+{
+  const recs: HistoryRecord[] = [];
+  for (let t = 1; t <= 5; t++) {
+    recs.push(user(`task ${t} question`));
+    recs.push(call(`t${t}a`, "bash", { cmd: `echo ${t}` }));
+    recs.push(obs(`t${t}a`, `out ${t} ${"y".repeat(3000)}`)); // ~750 tok per task
+    recs.push(assistant(`task ${t} answer`));
+  }
+  const { messages } = buildHistory(recs, { budgetTokens: 1_800 });
+  const text = messages.map((m) => m.content ?? "").join("\n");
+  // Sizes: each task ≈ 780 tok → budget 1800 keeps old tasks 4 and 3 whole;
+  // tasks 1-2 vanish together as a contiguous block.
+  check("flow: newest old tasks kept", text.includes("task 5 answer") && text.includes("task 4 answer"));
+  check("flow: oldest dropped entirely", !text.includes("task 1") && !text.includes("task 2"));
+  for (const t of [3, 4, 5]) {
+    const q = text.includes(`task ${t} question`);
+    const a = text.includes(`task ${t} answer`);
+    check(`flow: task ${t} complete (q&a together)`, q && a);
+  }
+  // No orphan answers: every assistant text is preceded (somewhere earlier in
+  // the payload) by its own user turn.
+  let lastUserIdx = -1;
+  let orphans = 0;
+  for (const m of messages) {
+    if (m.role === "user") lastUserIdx = m.content ?? "";
+    if (m.role === "assistant" && !m.tool_calls && /answer$/.test(m.content ?? "") && lastUserIdx === null) orphans++;
+  }
+  check("flow: no orphan assistant answers", orphans === 0);
+}
+
 // 11. A session whose ONLY unit is one oversized user message keeps it.
 {
   const { messages } = buildHistory([user("y".repeat(200_000))], { budgetTokens: 2_500 });
