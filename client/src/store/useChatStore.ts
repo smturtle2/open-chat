@@ -48,6 +48,7 @@ interface ChatState {
   eventSource: EventSource | null;
   models: ModelInfo[];
   selectedModel: string;
+  defaultModel: string;
 
   // Actions
   setTheme: (theme: "light" | "dark") => void;
@@ -68,8 +69,6 @@ interface ChatState {
   connectSSE: (sessionId: string, afterEventId?: number) => void;
 }
 
-const DEFAULT_MODEL = "muse-spark-1.2-contributor";
-
 export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   currentSessionId: null,
@@ -82,7 +81,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   theme: (localStorage.getItem("openchat_theme") as "light" | "dark") || "light",
   eventSource: null,
   models: [],
-  selectedModel: localStorage.getItem("openchat_model") || DEFAULT_MODEL,
+  selectedModel: localStorage.getItem("openchat_model") || "",
+  defaultModel: "",
 
   setTheme: (theme) => {
     localStorage.setItem("openchat_theme", theme);
@@ -111,7 +111,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         object: m.object,
         owned_by: m.owned_by,
       }));
-      set({ models });
+      const defaultModel: string = data.default || "";
+      set((state) => ({
+        models,
+        defaultModel,
+        // Adopt the platform default only until the user picks one.
+        selectedModel: state.selectedModel || defaultModel,
+      }));
     } catch {}
   },
 
@@ -137,7 +143,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const res = await fetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "New Chat", model: selectedModel }),
+        body: JSON.stringify({ title: "New Chat", model: selectedModel || get().defaultModel }),
       });
       const session: Session = await res.json();
       set((state) => ({
@@ -185,7 +191,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }));
 
       const isRunning = data.status === "running";
-      const sessionModel = data.model || DEFAULT_MODEL;
+      const sessionModel = data.model || get().defaultModel;
 
       set({
         messages: rawMessages,
@@ -348,144 +354,115 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const url = `/api/sessions/${sessionId}/events?after=${afterEventId}`;
     const es = new EventSource(url);
 
-    es.addEventListener("thought_delta", (e: any) => {
-      if (get().currentSessionId !== sessionId) return;
-      try {
-        const payload = JSON.parse(e.data);
-        set((state) => ({ currentThought: state.currentThought + payload.delta }));
-      } catch {}
+    // Shared plumbing: session guard + JSON parse for every data event.
+    const on = (type: string, fn: (payload: any) => void) =>
+      es.addEventListener(type, (e: any) => {
+        if (get().currentSessionId !== sessionId) return;
+        try {
+          fn(JSON.parse(e.data));
+        } catch {}
+      });
+
+    const resetStreamState = () => ({
+      isGenerating: false,
+      currentThought: "",
+      currentContent: "",
+      activeToolCalls: [],
     });
 
-    es.addEventListener("content_delta", (e: any) => {
-      if (get().currentSessionId !== sessionId) return;
-      try {
-        const payload = JSON.parse(e.data);
-        set((state) => ({ currentContent: state.currentContent + payload.delta }));
-      } catch {}
+    on("thought_delta", ({ delta }) => set((state) => ({ currentThought: state.currentThought + delta })));
+    on("content_delta", ({ delta }) => set((state) => ({ currentContent: state.currentContent + delta })));
+
+    on("tool_executing", (payload) => {
+      set((state) => {
+        if (state.activeToolCalls.some((t) => t.id === payload.id)) return state;
+        return {
+          activeToolCalls: [
+            ...state.activeToolCalls,
+            { id: payload.id, name: payload.name, args: payload.args, status: "running" as const },
+          ],
+        };
+      });
     });
 
-    es.addEventListener("tool_executing", (e: any) => {
-      if (get().currentSessionId !== sessionId) return;
-      try {
-        const payload = JSON.parse(e.data);
-        set((state) => {
-          const exists = state.activeToolCalls.find((t) => t.id === payload.id);
-          if (exists) return state;
-          return {
-            activeToolCalls: [
-              ...state.activeToolCalls,
-              {
-                id: payload.id,
-                name: payload.name,
-                args: payload.args,
-                status: "running",
-              },
-            ],
-          };
-        });
-      } catch {}
+    on("tool_observed", (payload) => {
+      set((state) => {
+        const updatedActive = state.activeToolCalls.map((t) =>
+          t.id === payload.tool_call_id
+            ? { ...t, status: "completed" as const, observation: payload.observation }
+            : t
+        );
+
+        const toolMsg: Message = {
+          id: `msg_tool_${payload.tool_call_id}`,
+          session_id: sessionId,
+          role: "tool",
+          tool_call_id: payload.tool_call_id,
+          name: payload.name,
+          content: payload.observation,
+          created_at: new Date().toISOString(),
+        };
+
+        const alreadyInMessages = state.messages.some(
+          (m) => m.tool_call_id === payload.tool_call_id
+        );
+
+        return {
+          activeToolCalls: updatedActive,
+          messages: alreadyInMessages ? state.messages : [...state.messages, toolMsg],
+        };
+      });
     });
 
-    es.addEventListener("tool_observed", (e: any) => {
-      if (get().currentSessionId !== sessionId) return;
-      try {
-        const payload = JSON.parse(e.data);
-        set((state) => {
-          const updatedActive = state.activeToolCalls.map((t) =>
-            t.id === payload.tool_call_id
-              ? { ...t, status: "completed" as const, observation: payload.observation }
-              : t
-          );
-
-          const toolMsg: Message = {
-            id: `msg_tool_${payload.tool_call_id}`,
-            session_id: sessionId,
-            role: "tool",
-            tool_call_id: payload.tool_call_id,
-            name: payload.name,
-            content: payload.observation,
-            created_at: new Date().toISOString(),
-          };
-
-          const alreadyInMessages = state.messages.some(
-            (m) => m.tool_call_id === payload.tool_call_id
-          );
-
-          return {
-            activeToolCalls: updatedActive,
-            messages: alreadyInMessages ? state.messages : [...state.messages, toolMsg],
-          };
-        });
-      } catch {}
+    on("user_message", (payload) => {
+      set((state) => {
+        if (state.messages.some((m) => m.id === payload.id)) return state;
+        return {
+          messages: [
+            ...state.messages,
+            {
+              id: payload.id,
+              session_id: sessionId,
+              role: "user",
+              content: payload.content,
+              created_at: new Date().toISOString(),
+            },
+          ],
+        };
+      });
     });
 
-    es.addEventListener("user_message", (e: any) => {
-      if (get().currentSessionId !== sessionId) return;
-      try {
-        const payload = JSON.parse(e.data);
-        set((state) => {
-          if (state.messages.some((m) => m.id === payload.id)) return state;
-          return {
-            messages: [
-              ...state.messages,
-              {
-                id: payload.id,
-                session_id: sessionId,
-                role: "user",
-                content: payload.content,
-                created_at: new Date().toISOString(),
-              },
-            ],
-          };
-        });
-      } catch {}
-    });
-
-    es.addEventListener("assistant_message", (e: any) => {
-      if (get().currentSessionId !== sessionId) return;
-      try {
-        const payload = JSON.parse(e.data);
-        set((state) => {
-          if (state.messages.some((m) => m.id === payload.id)) return state;
-          return {
-            messages: [
-              ...state.messages,
-              {
-                id: payload.id,
-                session_id: sessionId,
-                role: "assistant",
-                content: payload.content,
-                thought: payload.thought,
-                tool_calls: payload.tool_calls,
-                created_at: new Date().toISOString(),
-              },
-            ],
-            currentThought: "",
-            currentContent: "",
-          };
-        });
-      } catch {}
+    on("assistant_message", (payload) => {
+      set((state) => {
+        if (state.messages.some((m) => m.id === payload.id)) return state;
+        return {
+          messages: [
+            ...state.messages,
+            {
+              id: payload.id,
+              session_id: sessionId,
+              role: "assistant",
+              content: payload.content,
+              thought: payload.thought,
+              tool_calls: payload.tool_calls,
+              created_at: new Date().toISOString(),
+            },
+          ],
+          currentThought: "",
+          currentContent: "",
+        };
+      });
     });
 
     es.addEventListener("turn_completed", () => {
       if (get().currentSessionId !== sessionId) return;
-      set({
-        isGenerating: false,
-        currentThought: "",
-        currentContent: "",
-        activeToolCalls: [],
-      });
+      set(resetStreamState());
       get().fetchSessions();
     });
 
     es.addEventListener("task_interrupted", () => {
       if (get().currentSessionId !== sessionId) return;
-      set({
-        isGenerating: false,
-        currentThought: "",
-        currentContent: "",
-        activeToolCalls: [],
-      });
+      set(resetStreamState());
       get().fetchSessions();
     });
 

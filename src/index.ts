@@ -22,17 +22,17 @@ app.get("/api/sessions", (c) => {
   return c.json(sessions);
 });
 
-// API: Models from gateway
+// API: Models from gateway (plus the platform default model)
 app.get("/api/models", async (c) => {
   try {
     const res = await fetch(`${CONFIG.LLM_BASE_URL}/models`, {
       headers: { Authorization: `Bearer ${CONFIG.LLM_API_KEY}` },
     });
-    if (!res.ok) return c.json({ data: [] });
+    if (!res.ok) return c.json({ data: [], default: CONFIG.LLM_MODEL });
     const data = await res.json();
-    return c.json(data);
+    return c.json({ ...data, default: CONFIG.LLM_MODEL });
   } catch {
-    return c.json({ data: [] });
+    return c.json({ data: [], default: CONFIG.LLM_MODEL });
   }
 });
 
