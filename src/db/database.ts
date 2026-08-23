@@ -9,7 +9,7 @@ export interface SessionRecord {
   model: string;
   created_at: string;
   updated_at: string;
-  status: "idle" | "running" | "completed" | "error";
+  status: "idle" | "running";
 }
 
 export interface MessageRecord {

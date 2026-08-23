@@ -16,7 +16,7 @@ export interface Session {
   id: string;
   title: string;
   model: string;
-  status: "idle" | "running" | "completed" | "error";
+  status: "idle" | "running";
   created_at: string;
   updated_at: string;
 }

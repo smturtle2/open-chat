@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG } from "../config.js";
 import { db } from "../db/database.js";
-import { compactor, truncateDirectional, pageLines, type TruncateBias } from "./compactor.js";
+import { truncateDirectional, pageLines, type TruncateBias } from "./compactor.js";
 
 import { promisify } from "node:util";
 
@@ -172,8 +172,6 @@ export class ToolRegistry {
     console.log(`[sandbox] Removed ${ids.length} stale sandbox container(s)`);
   }
 
-  // Resolves relPath under workspaceDir or returns null when the path escapes
-  // the workspace (traversal, sibling-prefix tricks, or symlinks pointing out).
   getSchemas(): ToolDefinition[] {
     return [
       {
@@ -341,63 +339,47 @@ export class ToolRegistry {
       let rawResult = "";
       switch (name) {
         case "web_fetch":
-        case "scrape_webpage":
-        case "fetch_webpage":
-        case "scrape":
           rawResult = await this.scrapeWebpage(args, sessionId, workspaceDir, signal);
           break;
 
         case "web_crawl":
-        case "crawl":
-        case "spider":
           rawResult = await this.crawlWebsites(args, sessionId, workspaceDir, signal);
           break;
 
         case "bash":
-        case "execute_bash":
-        case "terminal":
-        case "shell":
-          rawResult = await this.executeBash(args.command || args.cmd || "", sessionId, workspaceDir, signal);
+          rawResult = await this.executeBash(args.command || "", sessionId, workspaceDir, signal);
           break;
 
         // Pure outbound HTTP from the server: no agent-controlled code and no
         // local filesystem/process access, so containerization does not apply.
         case "web_search":
-        case "search":
-          rawResult = await this.webSearch(args.query || args.q || "", sessionId, workspaceDir, signal);
+          rawResult = await this.webSearch(args.query || "", sessionId, workspaceDir, signal);
           break;
 
         case "read_file":
-        case "readFile":
-          rawResult = await this.fsOp(sessionId, workspaceDir, { op: "read", path: args.path || args.file_path || "", offset: args.offset, limit: args.limit }, signal);
+          rawResult = await this.fsOp(sessionId, workspaceDir, { op: "read", path: args.path || "", offset: args.offset, limit: args.limit }, signal);
           break;
 
         case "write_file":
-        case "writeFile":
-          rawResult = await this.fsOp(sessionId, workspaceDir, { op: "write", path: args.path || args.file_path || "", content: args.content ?? "" }, signal);
+          rawResult = await this.fsOp(sessionId, workspaceDir, { op: "write", path: args.path || "", content: args.content ?? "" }, signal);
           break;
 
         case "patch_file":
-        case "edit_file":
-        case "patchFile":
-          rawResult = await this.fsOp(sessionId, workspaceDir, { op: "patch", path: args.path || args.file_path || "", target: args.target ?? "", replacement: args.replacement ?? "" }, signal);
+          rawResult = await this.fsOp(sessionId, workspaceDir, { op: "patch", path: args.path || "", target: args.target ?? "", replacement: args.replacement ?? "" }, signal);
           break;
 
         case "python":
-        case "run_python":
-        case "python3":
           rawResult = await this.runPython(args.code || "", sessionId, workspaceDir, signal);
           break;
 
         case "read_output":
-        case "tool_output":
           rawResult = this.readArchivedOutput(sessionId, args);
           break;
 
         default:
           return `Error: Unknown tool "${name}"`;
       }
-      return compactor.compact(rawResult);
+      return rawResult;
     } catch (err: any) {
       return `Error executing tool "${name}": ${err.message || String(err)}`;
     }
@@ -579,7 +561,6 @@ export class ToolRegistry {
     const cleanQuery = query.trim();
 
     const container = await this.getContainer(sessionId, workspaceDir);
-    if (!container) return "Error: Sandbox backend unavailable (Docker is required for this tool)";
 
     const r = await this.runDockerExec(container, ["python3", "/opt/agent/web_search.py", cleanQuery, "10"], 60000, "Web search", undefined, signal);
 

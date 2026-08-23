@@ -35,12 +35,12 @@ export class AgentHarness {
     db.updateSessionStatus(sessionId, "running");
 
     let turn = 0;
-    const maxTurns = 40;
+    const maxTurns = CONFIG.MAX_AGENT_TURNS;
     const maxConsecutiveErrors = 5;
     let consecutiveErrors = 0;
     const sessionWorkspace = path.join(CONFIG.WORKSPACES_ROOT, sessionId);
 
-    // Unbounded SOTA autonomous loop: runs until final solution is delivered without tool calls or user aborts
+    // Autonomous loop: runs until the model delivers a final answer without tool calls, hits the turn cap, or is aborted.
     while (turn < maxTurns) {
       if (signal?.aborted) {
         db.appendEvent(sessionId, "task_interrupted", { message: "Task stopped by user" });
@@ -49,7 +49,7 @@ export class AgentHarness {
 
       turn++;
       const rawMessages = db.getMessages(sessionId);
-      const messagesForApi = this.prepareMessages(rawMessages, sessionWorkspace, sessionId);
+      const messagesForApi = this.prepareMessages(rawMessages, sessionWorkspace);
 
       db.appendEvent(sessionId, "turn_started", { turn });
 
@@ -91,7 +91,7 @@ export class AgentHarness {
           }
 
           const errBody = await response.text();
-          console.warn(`[Harness] API attempt ${attempt} failed with status ${response.status}: ${errBody}`);
+          console.warn(`[Harness] API attempt ${attempt} failed with status ${response.status}: ${errBody.slice(0, 300)}`);
           if (attempt < 3) {
             await new Promise((r) => setTimeout(r, attempt * 1000));
           }
@@ -398,8 +398,7 @@ export class AgentHarness {
 
       // If no tool calls were requested, the model has delivered its final response and concluded the task
       if (generatedToolCalls.length === 0) {
-        db.appendEvent(sessionId, "turn_completed", { turn, status: "completed" });
-        db.updateSessionStatus(sessionId, "completed");
+        db.appendEvent(sessionId, "turn_completed", { turn });
         break;
       }
 
@@ -461,7 +460,7 @@ export class AgentHarness {
     }
   }
 
-  private prepareMessages(records: any[], workspaceDir: string, sessionId: string): any[] {
+  private prepareMessages(records: any[], workspaceDir: string): any[] {
     const systemPrompt = {
       role: "system",
       content: `You are OpenChat, an elite autonomous AI software engineering agent.

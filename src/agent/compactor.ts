@@ -1,33 +1,3 @@
-export class MicroCompactor {
-  private maxChars: number;
-  private headChars: number;
-  private tailChars: number;
-
-  constructor(maxChars: number = 65536, headChars: number = 40960, tailChars: number = 16384) {
-    this.maxChars = maxChars;
-    this.headChars = headChars;
-    this.tailChars = tailChars;
-  }
-
-  compact(output: string): string {
-    if (!output || output.length <= this.maxChars) {
-      return output;
-    }
-
-    const totalLength = output.length;
-    const omittedLength = totalLength - (this.headChars + this.tailChars);
-    const omittedContent = output.slice(this.headChars, -this.tailChars);
-    const lineCount = (omittedContent.match(/\n/g) || []).length;
-
-    const head = output.slice(0, this.headChars);
-    const tail = output.slice(-this.tailChars);
-
-    return `${head}\n\n... [Output Truncated: ${omittedLength} characters omitted across ${lineCount} lines] ...\n\n${tail}`;
-  }
-}
-
-export const compactor = new MicroCompactor();
-
 // ---------------------------------------------------------------------------
 // Directional, line-aware truncation with archive reference.
 //

@@ -55,9 +55,8 @@ export const ChatView: React.FC = () => {
   const toolObservations = React.useMemo(() => {
     const map: Record<string, string> = {};
     for (const msg of messages) {
-      if (msg.role === "tool") {
-        if (msg.tool_call_id) map[msg.tool_call_id] = msg.content;
-        if (msg.name) map[msg.name] = msg.content;
+      if (msg.role === "tool" && msg.tool_call_id) {
+        map[msg.tool_call_id] = msg.content;
       }
     }
     return map;
@@ -101,7 +100,7 @@ export const ChatView: React.FC = () => {
               args = { raw: args };
             }
           }
-          const obs = toolObservations[tc.id] || toolObservations[name];
+          const obs = toolObservations[tc.id];
           pendingEntries.push({ item: { kind: "tool", id: tc.id, name, args, obs } });
         }
 
