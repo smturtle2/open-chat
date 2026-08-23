@@ -198,6 +198,41 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
   check("flow: no orphan assistant answers", orphans === 0);
 }
 
+// 12. CHRONOLOGY INVARIANT: the replayed payload must preserve the real
+// execution rhythm — (words/calls) then their results, tasks in original
+// order. Retention may drop whole pieces but NEVER reorders or reshapes
+// the flow ("steps 출력 steps 출력 steps 출력" cadence stays intact).
+{
+  const recs: HistoryRecord[] = [];
+  const markers: string[] = [];
+  const pushTask = (t: number) => {
+    recs.push(user(`U${t} 요청`));            markers.push(`U${t}`);
+    recs.push(assistant(`A${t} 중간 보고`));   markers.push(`A${t}`);
+    recs.push(call(`c${t}`, "bash", { cmd: `echo ${t}` }));
+    recs.push(obs(`c${t}`, `O${t} 실행결과`)); markers.push(`O${t}`);
+    recs.push(assistant(`F${t} 최종답변`));    markers.push(`F${t}`);
+  };
+  pushTask(1); pushTask(2); pushTask(3);
+
+  const { messages } = buildHistory(recs, { budgetTokens: 100_000 });
+  // Every surviving marker must appear in the same relative order as reality.
+  const seq: number[] = [];
+  for (const m of messages) {
+    const idx = markers.findIndex((k) => (m.content ?? "").includes(k));
+    if (idx !== -1) seq.push(idx);
+  }
+  check("chronology: all markers present", seq.length === markers.length, `${seq.length}/${markers.length}`);
+  let ordered = true;
+  for (let i = 1; i < seq.length; i++) if (seq[i] <= seq[i - 1]) ordered = false;
+  check("chronology: strict original order", ordered);
+  // Rhythm inside each task: report(A) < observation(O) < final(F).
+  const joined = messages.map((m) => m.content || "").join("|");
+  for (const t of [1, 2, 3]) {
+    const a = joined.indexOf(`A${t} `), o = joined.indexOf(`O${t} `), f = joined.indexOf(`F${t} `);
+    check(`chronology: task ${t} rhythm 말→도구결과→최종`, a !== -1 && o > a && f > o);
+  }
+}
+
 // 11. A session whose ONLY unit is one oversized user message keeps it.
 {
   const { messages } = buildHistory([user("y".repeat(200_000))], { budgetTokens: 2_500 });
