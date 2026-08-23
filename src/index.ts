@@ -11,7 +11,7 @@ import { CONFIG } from "./config.js";
 import { db } from "./db/database.js";
 import { coordinator } from "./agent/coordinator.js";
 import { sniffImageMime } from "./agent/tools.js";
-import { listSkills } from "./agent/skills.js";
+import { listSkills, syncBuiltinSkills } from "./agent/skills.js";
 import { tools } from "./agent/tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -360,6 +360,7 @@ if (fs.existsSync(clientDist)) {
 
 // Start HTTP Server
 const port = CONFIG.PORT;
+syncBuiltinSkills();
 console.log(`[OpenChat] Starting server on http://localhost:${port}`);
 if (!CONFIG.LLM_API_KEY) {
   console.error("[OpenChat] LLM_API_KEY is not set — chat requests will fail. Configure it in /root/openchat/.env");

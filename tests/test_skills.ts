@@ -15,7 +15,7 @@ const skillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oc-skills-"));
 process.env.OPENCHAT_SKILLS_DIR = skillsRoot;
 
 // env must be set before config.js loads → dynamic imports
-const { listSkills, readSkillBody } = await import("../src/agent/skills");
+const { listSkills, readSkillBody, syncBuiltinSkills } = await import("../src/agent/skills");
 const { harness } = await import("../src/agent/harness");
 const { db } = await import("../src/db/database");
 
@@ -66,6 +66,36 @@ fs.mkdirSync(path.join(skillsRoot, "orphan-dir"), { recursive: true }); // no SK
   check("confinement: unknown skill rejected", (await readSkillBody("does-not-exist")) === null);
   check("confinement: traversal rejected", (await readSkillBody("..")) === null && (await readSkillBody("etc-passwd")) === null);
   check("confinement: bad charset rejected", (await readSkillBody("Alpha-Test")) === null);
+}
+
+// -- builtin sync & precedence ---------------------------------------------
+{
+  const marker = path.join(skillsRoot, ".builtin", ".fingerprint");
+  syncBuiltinSkills();
+  check("builtin: synced to .builtin with fingerprint", fs.existsSync(marker) && fs.existsSync(path.join(skillsRoot, ".builtin", "skill-installer", "SKILL.md")));
+  const fp1 = fs.readFileSync(marker, "utf8");
+  const mdTime = fs.statSync(path.join(skillsRoot, ".builtin", "skill-installer", "SKILL.md")).mtimeMs;
+  await new Promise((r) => setTimeout(r, 20));
+  syncBuiltinSkills();
+  check("builtin: idempotent (no rewrite when fingerprint matches)", fs.readFileSync(marker, "utf8") === fp1 && fs.statSync(path.join(skillsRoot, ".builtin", "skill-installer", "SKILL.md")).mtimeMs === mdTime);
+
+  const listed = listSkills();
+  const inst = listed.find((s) => s.name === "skill-installer");
+  check("builtin: merged into listing", !!inst && inst.builtin === true);
+  const builtinBody = await readSkillBody("skill-installer");
+  check("builtin: body readable via readSkillBody fallback", !!builtinBody && builtinBody.body.includes("# Skill Installer") && builtinBody.files.includes("scripts/install_skill.py"), builtinBody?.files.join(","));
+
+  // user override shadows the builtin
+  fs.mkdirSync(path.join(skillsRoot, "skill-installer"), { recursive: true });
+  fs.writeFileSync(
+    path.join(skillsRoot, "skill-installer", "SKILL.md"),
+    "---\nname: skill-installer\ndescription: USER OVERRIDE\n---\nUser copy.\n",
+  );
+  const overridden = listSkills().find((s) => s.name === "skill-installer")!;
+  check("override: user skill wins in listing", overridden.builtin !== true && overridden.description === "USER OVERRIDE");
+  const body = await readSkillBody("skill-installer");
+  check("override: user copy wins on read", body!.dir === path.join(skillsRoot, "skill-installer"));
+  fs.rmSync(path.join(skillsRoot, "skill-installer"), { recursive: true, force: true });
 }
 
 // -- prompt enrichment (slash-invoked skill rides the user turn) ------------

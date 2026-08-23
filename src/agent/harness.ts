@@ -563,8 +563,8 @@ Use the load_skill tool to load a skill when a task matches its description.
 ${skills.map((s) => `<skill>\n<name>${s.name}</name>\n<description>${s.description.replace(/]]>/g, "")}</description>\n<location>/opt/skills/${s.name}/SKILL.md</location>\n</skill>`).join("\n")}
 </available_skills>
 Skills live under /opt/skills in your sandbox, which is WRITABLE: install new
-skills by creating <name>/SKILL.md there (git clone or curl also work); they
-become available from your next turn.
+skills with the skill-installer skill (or by creating <name>/SKILL.md there
+yourself); they become available from your next turn.
 `;
 
     const systemPrompt = {
