@@ -49,6 +49,7 @@ interface ChatState {
   models: ModelInfo[];
   selectedModel: string;
   defaultModel: string;
+  lastError: string | null;
 
   // Actions
   setTheme: (theme: "light" | "dark") => void;
@@ -61,6 +62,7 @@ interface ChatState {
   deleteSession: (id: string) => Promise<void>;
   updateSessionTitle: (id: string, title: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
+  clearError: () => void;
   setSelectedModel: (model: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   editMessage: (messageId: string, newContent: string) => Promise<void>;
@@ -83,6 +85,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   models: [],
   selectedModel: localStorage.getItem("openchat_model") || "",
   defaultModel: "",
+  lastError: null,
 
   setTheme: (theme) => {
     localStorage.setItem("openchat_theme", theme);
@@ -100,6 +103,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
+
+  clearError: () => set({ lastError: null }),
 
   fetchModels: async () => {
     try {
@@ -164,6 +169,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   selectSession: async (id: string) => {
+    set({ lastError: null });
     const { eventSource } = get();
     if (eventSource) {
       eventSource.close();
@@ -269,6 +275,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentThought: "",
       currentContent: "",
       activeToolCalls: [],
+      lastError: null,
     });
 
     try {
@@ -297,6 +304,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentThought: "",
       currentContent: "",
       activeToolCalls: [],
+      lastError: null,
     });
 
     try {
@@ -324,6 +332,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentThought: "",
       currentContent: "",
       activeToolCalls: [],
+      lastError: null,
     });
 
     try {
@@ -466,9 +475,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       get().fetchSessions();
     });
 
-    es.addEventListener("error", () => {
+    on("turn_started", () => {
+      if (get().lastError) set({ lastError: null });
+    });
+
+    // Harness failure events carry a data payload; native EventSource
+    // connection errors do not (they auto-reconnect silently).
+    es.addEventListener("error", (e: any) => {
+      if (!e?.data) return;
       if (get().currentSessionId !== sessionId) return;
-      set({ isGenerating: false });
+      let message = "The task failed unexpectedly.";
+      try {
+        message = JSON.parse(e.data).message || message;
+      } catch {}
+      set({
+        ...resetStreamState(),
+        lastError: message,
+      });
     });
 
     set({ eventSource: es });

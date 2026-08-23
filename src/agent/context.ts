@@ -126,14 +126,28 @@ export function buildHistory(
   for (const u of units) u.size = unitSize(u.recs);
 
   // ---- Pass 2: backward walk under the char budget ------------------------
-  let start = units.length;
+  // User-message units are NEVER budget-cut: they carry the task intent, and
+  // dropping them yields payloads with zero user messages, which gateways
+  // reject outright (observed: HTTP 400 "messages parameter is illegal").
+  // Non-user units compete for the budget newest-first; the newest unit is
+  // always kept even if it alone exceeds the budget.
+  const isUserUnit = (u: Unit) => u.recs[0]?.role === "user";
+  const keep = new Array<boolean>(units.length).fill(false);
   let spent = 0;
+  let keptCount = 0;
   for (let i = units.length - 1; i >= 0; i--) {
-    spent += units[i].size;
-    start = i;
-    if (spent >= budgetChars) break;
+    if (isUserUnit(units[i])) {
+      keep[i] = true;
+      keptCount++;
+      continue;
+    }
+    if (spent < budgetChars) {
+      keep[i] = true;
+      keptCount++;
+      spent += units[i].size;
+    }
   }
-  const keptUnits = units.slice(start);
+  const keptUnits = units.filter((_, i) => keep[i]);
 
   // ---- Pass 3: aging — collapse old tool observations to receipts ---------
   let toolsSeen = 0;
@@ -190,7 +204,7 @@ export function buildHistory(
       recordsIn: records.length,
       recordsKept: sliced.length,
       unitsTotal: units.length,
-      unitsDropped: start,
+      unitsDropped: units.length - keptCount,
       toolsCollapsed,
       charsIn,
       charsKept,

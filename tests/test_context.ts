@@ -129,5 +129,39 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
   check("immutable inputs", recs.every((r, i) => r.content === before[i]));
 }
 
+// 10. REGRESSION (2026-08-23 incident): crossing the budget must never drop
+// user messages. Large tool-call args pushed real size past the budget while
+// content-only chars looked small; the old cut dropped the opening user unit,
+// producing a zero-user-message payload the gateway rejected with HTTP 400.
+{
+  const recs: HistoryRecord[] = [user("ORIGINAL TASK PROMPT")];
+  for (let i = 0; i < 12; i++) {
+    recs.push(call(`big${i}`, "write_file", { path: `f${i}.html`, content: "x".repeat(20_000) }));
+    recs.push(obs(`big${i}`, "ok"));
+    if (i % 4 === 3) recs.push(user(`follow-up ${i}`));
+  }
+  const { messages, stats } = buildHistory(recs, { budgetChars: 50_000 });
+  const allText = messages.map((m) => m.content ?? "").join("\n");
+  check("regression: first task prompt survives", allText.includes("ORIGINAL TASK PROMPT"));
+  check("regression: follow-up prompts survive", [3, 7, 11].every((i) => allText.includes(`follow-up ${i}`)));
+  check("regression: budget still cuts tool units", stats.unitsDropped > 0, `${stats.unitsDropped}`);
+  // Pair safety must hold in the surviving slice.
+  let pairsOk = true;
+  for (let i = 0; i < messages.length; i++) {
+    if ((messages[i] as any).role === "tool") {
+      const prev = messages.slice(0, i).reverse().find((m) => m.role === "assistant");
+      const ids = ((prev as any)?.tool_calls ?? []).map((t: any) => t.id);
+      if (!ids.includes(messages[i].tool_call_id)) pairsOk = false;
+    }
+  }
+  check("regression: pairs intact after cut", pairsOk);
+}
+
+// 11. A session whose ONLY unit is one oversized user message keeps it.
+{
+  const { messages } = buildHistory([user("y".repeat(200_000))], { budgetChars: 10_000 });
+  check("oversized lone user kept", messages.length === 1 && messages[0].content?.length === 200_000);
+}
+
 console.log(failures === 0 ? "\n>>> ALL PASSED" : `\n>>> ${failures} FAILURES`);
 process.exit(failures ? 1 : 0);

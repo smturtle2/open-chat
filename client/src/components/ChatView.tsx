@@ -24,6 +24,8 @@ export const ChatView: React.FC = () => {
     isGenerating,
     editMessage,
     regenerateMessage,
+    lastError,
+    clearError,
   } = useChatStore();
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -396,6 +398,26 @@ export const ChatView: React.FC = () => {
                 );
               })}
             </>
+          )}
+
+          {/* Task failure notice — surfaced instead of failing silently */}
+          {lastError && (
+            <div
+              data-error-notice
+              className="flex items-start justify-between gap-3 rounded-xl border border-red-300/70 dark:border-red-500/30 bg-red-50 dark:bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300"
+            >
+              <span className="leading-relaxed">
+                <span className="font-semibold">Task failed: </span>
+                {lastError}
+              </span>
+              <button
+                onClick={clearError}
+                title="Dismiss"
+                className="flex-shrink-0 rounded px-1.5 text-red-400 hover:text-red-600 dark:hover:text-red-200 transition-colors cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
           )}
         </div>
       </div>
