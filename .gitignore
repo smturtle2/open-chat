@@ -7,3 +7,4 @@ openchat.db-shm
 .env
 *.log
 /tmp/
+/screenshot*.png
