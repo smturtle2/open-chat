@@ -12,7 +12,7 @@ const MODEL = 'ox-alpha-free';
   await page.waitForTimeout(1000);
   await page.locator('button:has-text("New chat")').first().click();
   await page.waitForTimeout(500);
-  await page.locator('.pb-2 button').first().click();
+  await page.locator('[data-model-trigger]').click();
   await page.waitForTimeout(250);
   await page.locator('input[placeholder="Search models..."]').fill(MODEL);
   await page.waitForTimeout(150);

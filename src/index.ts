@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { CONFIG } from "./config.js";
 import { db } from "./db/database.js";
 import { coordinator } from "./agent/coordinator.js";
+import { sniffImageMime } from "./agent/tools.js";
 import { tools } from "./agent/tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,7 +50,10 @@ app.get("/api/sessions/:id", (c) => {
   const id = c.req.param("id");
   const session = db.getSession(id);
   if (!session) return c.json({ error: "Session not found" }, 404);
-  const messages = db.getMessages(id);
+  const messages = db.getMessages(id).map((m) => ({
+    ...m,
+    attachments: db.getMessageAttachments(m.id),
+  }));
   const isRunning = coordinator.isRunning(id);
   const lastEventId = db.getLastEventId(id);
   return c.json({ ...session, status: isRunning ? "running" : session.status, messages, last_event_id: lastEventId });
@@ -175,6 +179,57 @@ app.get("/api/sessions/:id/files/:filename{.+}", (c) => {
   return c.body(fileData);
 });
 
+// API: Attachments — save an upload into the session workspace (uploads/) and
+// register it unclaimed; the next message POST claims it by id. Image kind is
+// decided by magic bytes, not the extension.
+const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
+
+app.post("/api/sessions/:id/attachments", async (c) => {
+  const id = c.req.param("id");
+  const session = db.getSession(id);
+  if (!session) return c.json({ error: "Session not found" }, 404);
+
+  const body = await c.req.parseBody();
+  const file = body.file;
+  if (!(file instanceof File)) return c.json({ error: "multipart field 'file' is required" }, 400);
+  if (file.size === 0) return c.json({ error: "Empty file" }, 400);
+  if (file.size > ATTACHMENT_MAX_BYTES) return c.json({ error: "File too large (limit 20MB)" }, 413);
+
+  const buf = Buffer.from(await file.arrayBuffer());
+  const sniffedMime = sniffImageMime(buf);
+  const kind: "image" | "file" = sniffedMime ? "image" : "file";
+
+  const uploadsDir = path.join(CONFIG.WORKSPACES_ROOT, id, "uploads");
+  fs.mkdirSync(uploadsDir, { recursive: true });
+
+  const base = file.name.replace(/[^\w.\-\uAC00-\uD7A3]+/g, "_").slice(-80) || "upload";
+  // Give misnamed images their canonical extension so downstream tooling
+  // (browsers rendering thumbnails) sees a coherent type.
+  let uniqueName = `${Date.now().toString(36)}_${base}`;
+  if (kind === "image") {
+    const canonicalExt = "." + sniffedMime!.split("/")[1].replace("jpeg", "jpg");
+    if (!uniqueName.toLowerCase().endsWith(canonicalExt)) {
+      const stripped = uniqueName.replace(/\.[a-zA-Z0-9]+$/, "");
+      uniqueName = `${stripped}${canonicalExt}`;
+    }
+  }
+  const absPath = path.join(uploadsDir, uniqueName);
+  fs.writeFileSync(absPath, buf);
+
+  const attId = "att_" + Math.random().toString(36).substring(2, 11);
+  const relPath = `uploads/${uniqueName}`;
+  db.createAttachment({
+    id: attId,
+    session_id: id,
+    kind,
+    name: file.name,
+    mime: sniffedMime || file.type || "application/octet-stream",
+    size: file.size,
+    path: relPath,
+  });
+  return c.json({ id: attId, kind, name: file.name, path: relPath, size: file.size, mime: sniffedMime || file.type || "application/octet-stream" });
+});
+
 // API: Messages & Execution
 app.post("/api/sessions/:id/messages", async (c) => {
   const id = c.req.param("id");
@@ -185,13 +240,15 @@ app.post("/api/sessions/:id/messages", async (c) => {
   const prompt = (body.content || "").trim();
   if (!prompt) return c.json({ error: "Content is required" }, 400);
 
+  const attachmentIds: string[] = Array.isArray(body.attachmentIds) ? body.attachmentIds.filter((x: any) => typeof x === "string").slice(0, 8) : [];
+
   const messages = db.getMessages(id);
   if (messages.length === 0 && session.title === "New Chat") {
     const autoTitle = prompt.slice(0, 30) + (prompt.length > 30 ? "..." : "");
     db.updateSessionTitle(id, autoTitle);
   }
 
-  coordinator.submit(id, prompt);
+  coordinator.submit(id, prompt, attachmentIds);
   return c.json({ status: "submitted" });
 });
 

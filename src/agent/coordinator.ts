@@ -27,7 +27,7 @@ export class SessionCoordinator {
     return entry.promise.catch(() => undefined);
   }
 
-  submit(sessionId: string, prompt: string): void {
+  submit(sessionId: string, prompt: string, attachmentIds: string[] = []): void {
     const previous = this.replaceTask(sessionId);
     const model = this.getSessionModel(sessionId);
 
@@ -36,7 +36,7 @@ export class SessionCoordinator {
     task.promise = previous.then(() => {
       // Superseded again while waiting for the old run to drain.
       if (controller.signal.aborted) return undefined;
-      return harness.runAutonomousLoop(sessionId, prompt, controller.signal, model) as Promise<void>;
+      return harness.runAutonomousLoop(sessionId, prompt, controller.signal, model, attachmentIds) as Promise<void>;
     }).finally(() => {
       if (this.activeTasks.get(sessionId) === task) this.activeTasks.delete(sessionId);
     });

@@ -1,14 +1,22 @@
 // History assembly for the model-facing prompt.
 //
-// Two mechanisms, both deterministic (no LLM in the loop):
-//   1. Budget cut — walk units back-to-front until the char budget is spent.
-//      Units are never split mid-pair: an assistant message carrying
-//      tool_calls and its role:"tool" results always move together, so the
-//      API's pairing invariant can never be violated by a cut.
+// Mechanisms, all deterministic (no LLM in the loop):
+//   1. Whole-task cut — history is cut at task boundaries; the current task
+//      is kept verbatim, older tasks survive whole newest-first while they
+//      fit the token budget. Units are pair-safe: an assistant message
+//      carrying tool_calls and its role:"tool" results always move together.
 //   2. Aging — tool observations older than `recentFullTools` collapse to a
-//     one-line receipt. The call record and its arguments stay visible; only
-//     the bulky output body is replaced. Full copies remain recoverable via
-//     read_output {"id": N} whenever the original surface referenced one.
+//      one-line receipt. The call record and its arguments stay visible; only
+//      the bulky output body is replaced. Full copies remain recoverable via
+//      read_output {"id": N}. Image observations lose their bytes entirely
+//      (the file stays on disk).
+//   3. Image observations — serialized as {"__obs__":"image",...} envelopes;
+//      fresh ones are re-read from the workspace and emitted as multipart
+//      vision content right before the API call.
+
+import fs from "node:fs";
+import path from "node:path";
+import { parseObservation } from "./tools.js";
 
 export type HistoryRecord = {
   id?: string;
@@ -24,6 +32,8 @@ export interface HistoryOptions {
   budgetTokens?: number;
   recentFullTools?: number;
   maxRecords?: number;
+  /** Session workspace root — enables re-hydrating image observations. */
+  workspaceDir?: string;
 }
 
 // Script-aware token estimation. Measured ratios vary by tokenizer
@@ -52,13 +62,25 @@ export interface HistoryStats {
 
 export interface BuiltMessage {
   role: "user" | "assistant" | "tool";
-  content?: string;
+  content?: string | Array<Record<string, any>>;
   tool_call_id?: string;
   name?: string;
   tool_calls?: any[];
 }
 
 const OVERHEAD_PER_RECORD = 24;
+
+// Vision tokens billed per image part (≈1024² at high detail on OpenAI-style
+// gateways). Conservative flat estimate — real cost varies with resolution.
+const IMAGE_TOKEN_ESTIMATE = 765;
+
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
 
 function parseToolCalls(raw: any): any[] {
   if (!raw) return [];
@@ -77,12 +99,17 @@ type Unit = { recs: HistoryRecord[]; size: number };
 
 const OVERHEAD_TOKENS_PER_RECORD = Math.ceil(OVERHEAD_PER_RECORD / 4);
 
+function recordTokens(r: HistoryRecord): number {
+  const obs = typeof r.content === "string" ? parseObservation(r.content) : null;
+  let n = OVERHEAD_TOKENS_PER_RECORD + estimateTokens(obs ? obs.text : r.content ?? "");
+  if (r.tool_calls) n += estimateTokens(JSON.stringify(r.tool_calls));
+  if (obs) n += IMAGE_TOKEN_ESTIMATE;
+  return n;
+}
+
 function unitSize(recs: HistoryRecord[]): number {
   let n = 0;
-  for (const r of recs) {
-    n += OVERHEAD_TOKENS_PER_RECORD + estimateTokens(r.content ?? "");
-    if (r.tool_calls) n += estimateTokens(JSON.stringify(r.tool_calls));
-  }
+  for (const r of recs) n += recordTokens(r);
   return n;
 }
 
@@ -96,8 +123,10 @@ function statusHint(content: string): string {
 const OUTPUT_ID_RE = /output #(\d+)/;
 
 export function receiptFor(rec: HistoryRecord): string {
-  const content = rec.content ?? "";
   const name = rec.name || "tool";
+  const obs = typeof rec.content === "string" ? parseObservation(rec.content) : null;
+  if (obs) return `[${name} · ok · ${obs.text}]`;
+  const content = rec.content ?? "";
   const kb = content.length >= 1024 ? `${(content.length / 1024).toFixed(1)}KB` : `${content.length}B`;
   const id = content.match(OUTPUT_ID_RE)?.[1];
   const tail = id ? ` · full copy: read_output {"id": ${id}}` : "";
@@ -111,6 +140,7 @@ export function buildHistory(
   const budgetTokens = opts.budgetTokens ?? 145_000;
   const recentFullTools = Math.max(0, opts.recentFullTools ?? 8);
   const maxRecords = Math.max(1, opts.maxRecords ?? 200);
+  const workspaceDir = opts.workspaceDir;
 
   // ---- Pass 1: group records into pair-safe units -------------------------
   const units: Unit[] = [];
@@ -230,7 +260,30 @@ export function buildHistory(
       }
       messages.push(msg);
     } else if (r.role === "tool") {
-      messages.push({ role: "tool", tool_call_id: r.tool_call_id ?? "", name: r.name ?? undefined, content: r.content ?? "" });
+      const obs = typeof r.content === "string" ? parseObservation(r.content) : null;
+      const msg: BuiltMessage = { role: "tool", tool_call_id: r.tool_call_id ?? "", name: r.name ?? undefined };
+      if (obs && workspaceDir) {
+        // Re-hydrate the image from disk right before the call. If the file
+        // has vanished, degrade to a plain-text note instead of failing.
+        try {
+          const absReal = fs.realpathSync(path.resolve(workspaceDir, obs.path ?? ""));
+          const wsReal = fs.realpathSync(workspaceDir);
+          const relCheck = path.relative(wsReal, absReal);
+          if (relCheck.startsWith("..") || path.isAbsolute(relCheck)) throw new Error("escapes workspace");
+          const mime = IMAGE_MIME_BY_EXT[path.extname(absReal).toLowerCase()];
+          if (!mime) throw new Error("unsupported image type");
+          const buf = fs.readFileSync(absReal);
+          msg.content = [
+            { type: "text", text: obs.text },
+            { type: "image_url", image_url: { url: `data:${mime};base64,${buf.toString("base64")}` } },
+          ];
+        } catch {
+          msg.content = `(이미지 유실: ${obs.path})`;
+        }
+      } else {
+        msg.content = obs ? obs.text : r.content ?? "";
+      }
+      messages.push(msg);
     }
   }
 

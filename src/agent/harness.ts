@@ -4,6 +4,7 @@ import { db } from "../db/database.js";
 import { tools } from "./tools.js";
 import { extractJsonObjects, parseToolArguments } from "./jsonUtils.js";
 import { buildHistory } from "./context.js";
+import { serializeObservation } from "./tools.js";
 
 type StreamingToolCall = {
   id: string;
@@ -16,16 +17,32 @@ function generateCallId(): string {
 }
 
 export class AgentHarness {
-  async runAutonomousLoop(sessionId: string, userPrompt: string, signal?: AbortSignal, model?: string) {
-    // 1. Record new user message
+  async runAutonomousLoop(sessionId: string, userPrompt: string, signal?: AbortSignal, model?: string, attachmentIds: string[] = []) {
+    // 1. Record new user message. Attachment markers are baked into the stored
+    // content so every replay shows the model where the files live; the UI
+    // renders thumbnails from the structured attachments payload instead.
     const userMsgId = "msg_" + Math.random().toString(36).substring(2, 11);
+    const claimed = db.claimAttachments(userMsgId, sessionId, attachmentIds);
+    const markers = claimed
+      .map((a) => {
+        const kb = a.size >= 1024 ? `${(a.size / 1024).toFixed(0)}KB` : `${a.size}B`;
+        return a.kind === "image"
+          ? `[첨부 이미지: ${a.path} · ${kb}]`
+          : `[첨부 파일: ${a.path} · ${kb}]`;
+      })
+      .join("\n");
+    const fullContent = markers ? `${userPrompt}\n\n${markers}` : userPrompt;
     db.addMessage({
       id: userMsgId,
       session_id: sessionId,
       role: "user",
-      content: userPrompt,
+      content: fullContent,
     });
-    db.appendEvent(sessionId, "user_message", { id: userMsgId, content: userPrompt });
+    db.appendEvent(sessionId, "user_message", {
+      id: userMsgId,
+      content: userPrompt,
+      attachments: claimed.map((a) => ({ kind: a.kind, name: a.name, path: a.path, size: a.size, mime: a.mime })),
+    });
 
     // 2. Execute assistant loop
     await this.runAssistantTurn(sessionId, signal, model);
@@ -464,7 +481,8 @@ export class AgentHarness {
 
           let observation = "";
           try {
-            observation = await tools.execute(tc.function.name, parsedArgs, sessionId, signal);
+            const result = await tools.execute(tc.function.name, parsedArgs, sessionId, signal);
+            observation = typeof result === "string" ? result : serializeObservation(result);
           } catch (toolErr: any) {
             observation = `Tool Execution Error: ${toolErr.message || String(toolErr)}`;
           }
@@ -538,12 +556,14 @@ Your current working directory (CWD) is set to your sandbox root.
 - \`web_fetch\`: Single-page precision fetcher & scraper powered by Scrapling. Supports engine ('http', 'stealth' for Cloudflare/Turnstile bypass, 'dynamic' for JS rendering), selectors (CSS, XPath, Text, Regex), adaptive re-location, screenshots, and formats (markdown, text, html, links, json).
 - \`web_crawl\`: Multi-page spider crawler powered by Scrapling. Crawls websites via sitemap.xml or link following with regex pattern filtering, extracts targeted content, and saves structured results to a file (JSON/CSV).
 - \`read_file\`, \`write_file\`, \`patch_file\`: Inspect, create/overwrite, and surgically patch files in the sandbox.
-- \`python\`: Execute Python 3 code for computation and analysis.`,
+- \`python\`: Execute Python 3 code for computation and analysis.
+- \`view_image\`: Look at an image file (user uploads in uploads/ or generated images). When a message carries an attachment marker like [첨부 이미지: uploads/x.png · 240KB], call view_image with that path to actually see it before reasoning about its content.`,
     };
 
     const { messages } = buildHistory(records, {
       budgetTokens: CONFIG.HISTORY_BUDGET_TOKENS,
       recentFullTools: CONFIG.HISTORY_RECENT_FULL_TOOLS,
+      workspaceDir,
     });
 
     return [systemPrompt, ...messages];

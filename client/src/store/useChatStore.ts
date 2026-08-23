@@ -1,5 +1,14 @@
 import { create } from "zustand";
 
+export interface AttachmentMeta {
+  id?: string;
+  kind: "image" | "file";
+  name: string;
+  path: string;
+  size: number;
+  mime?: string;
+}
+
 export interface Message {
   id: string;
   session_id: string;
@@ -9,6 +18,8 @@ export interface Message {
   tool_calls?: any;
   tool_call_id?: string;
   name?: string;
+  attachments?: AttachmentMeta[];
+  imageUrl?: string;
   created_at: string;
 }
 
@@ -50,8 +61,12 @@ interface ChatState {
   selectedModel: string;
   defaultModel: string;
   lastError: string | null;
+  pendingAttachments: AttachmentMeta[];
+  uploading: boolean;
 
   // Actions
+  addFiles: (files: File[] | FileList) => Promise<void>;
+  removePendingAttachment: (id: string) => void;
   setTheme: (theme: "light" | "dark") => void;
   toggleTheme: () => void;
   setSidebarOpen: (open: boolean) => void;
@@ -86,6 +101,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
   selectedModel: localStorage.getItem("openchat_model") || "",
   defaultModel: "",
   lastError: null,
+  pendingAttachments: [],
+  uploading: false,
+
+  addFiles: async (files) => {
+    const { currentSessionId } = get();
+    if (!currentSessionId) return;
+    const list = Array.from(files);
+    if (list.length === 0) return;
+    set({ uploading: true });
+    const added: AttachmentMeta[] = [];
+    for (const file of list) {
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        const res = await fetch(`/api/sessions/${currentSessionId}/attachments`, { method: "POST", body: form });
+        if (res.ok) {
+          added.push(await res.json());
+        } else {
+          const err = await res.json().catch(() => ({ error: "Upload failed" }));
+          set({ lastError: err.error || "Upload failed" });
+        }
+      } catch {
+        set({ lastError: "Upload failed" });
+      }
+    }
+    set((state) => ({ pendingAttachments: [...state.pendingAttachments, ...added].slice(0, 8), uploading: false }));
+  },
+
+  removePendingAttachment: (id) => {
+    set((state) => ({ pendingAttachments: state.pendingAttachments.filter((a) => a.id !== id) }));
+  },
 
   setTheme: (theme) => {
     localStorage.setItem("openchat_theme", theme);
@@ -191,10 +237,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (get().currentSessionId !== id) return;
 
-      const rawMessages: Message[] = (data.messages || []).map((m: any) => ({
-        ...m,
-        tool_calls: m.tool_calls ? (typeof m.tool_calls === "string" ? JSON.parse(m.tool_calls) : m.tool_calls) : undefined,
-      }));
+      const rawMessages: Message[] = (data.messages || []).map((m: any) => {
+        const msg: Message = {
+          ...m,
+          tool_calls: m.tool_calls ? (typeof m.tool_calls === "string" ? JSON.parse(m.tool_calls) : m.tool_calls) : undefined,
+        };
+        // Image observations are stored as envelopes; render via file route.
+        if (msg.role === "tool" && typeof m.content === "string" && m.content.startsWith("{")) {
+          try {
+            const parsed = JSON.parse(m.content);
+            if (parsed && parsed.__obs__ === "image" && typeof parsed.path === "string") {
+              msg.content = `[이미지 · ${parsed.text}]`;
+              msg.imageUrl = `/api/sessions/${id}/files/${parsed.path}`;
+            }
+          } catch {}
+        }
+        return msg;
+      });
 
       const isRunning = data.status === "running";
       const sessionModel = data.model || get().defaultModel;
@@ -267,8 +326,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (content: string) => {
-    const { currentSessionId } = get();
+    const { currentSessionId, pendingAttachments } = get();
     if (!currentSessionId || !content.trim()) return;
+
+    const attachmentIds = pendingAttachments.map((a) => a.id).filter(Boolean) as string[];
 
     set({
       isGenerating: true,
@@ -276,13 +337,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentContent: "",
       activeToolCalls: [],
       lastError: null,
+      pendingAttachments: [],
     });
 
     try {
       await fetch(`/api/sessions/${currentSessionId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, attachmentIds }),
       });
     } catch {
       set({ isGenerating: false });
@@ -396,9 +458,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     on("tool_observed", (payload) => {
       set((state) => {
+        // Image observations arrive as a serialized envelope; render via the
+        // workspace file route instead of embedding bytes in the event.
+        let observation: string = payload.observation;
+        let imageUrl: string | undefined;
+        try {
+          const parsed = JSON.parse(payload.observation);
+          if (parsed && parsed.__obs__ === "image" && typeof parsed.path === "string") {
+            observation = `[이미지 · ${parsed.text}]`;
+            imageUrl = `/api/sessions/${sessionId}/files/${parsed.path}`;
+          }
+        } catch {}
+
         const updatedActive = state.activeToolCalls.map((t) =>
           t.id === payload.tool_call_id
-            ? { ...t, status: "completed" as const, observation: payload.observation }
+            ? { ...t, status: "completed" as const, observation }
             : t
         );
 
@@ -408,7 +482,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           role: "tool",
           tool_call_id: payload.tool_call_id,
           name: payload.name,
-          content: payload.observation,
+          content: observation,
+          imageUrl,
           created_at: new Date().toISOString(),
         };
 
@@ -434,6 +509,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               session_id: sessionId,
               role: "user",
               content: payload.content,
+              attachments: Array.isArray(payload.attachments) ? payload.attachments : undefined,
               created_at: new Date().toISOString(),
             },
           ],

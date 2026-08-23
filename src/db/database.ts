@@ -32,6 +32,18 @@ export interface EventRecord {
   created_at: string;
 }
 
+export interface AttachmentRecord {
+  id: string;
+  session_id: string;
+  message_id: string | null;
+  kind: "image" | "file";
+  name: string;
+  mime: string;
+  size: number;
+  path: string;
+  created_at: string;
+}
+
 export class AppDatabase {
   private db: Database.Database;
 
@@ -107,6 +119,21 @@ export class AppDatabase {
       );
 
       CREATE INDEX IF NOT EXISTS idx_tool_usage_session ON tool_usage(session_id);
+
+      CREATE TABLE IF NOT EXISTS attachments (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        message_id TEXT,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        mime TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
     `);
 
     // Migration: add model column if missing
@@ -269,6 +296,34 @@ export class AppDatabase {
     this.db
       .prepare("INSERT INTO tool_usage (session_id, tool, raw_chars, visible_chars, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(sessionId, tool, rawChars, visibleChars, new Date().toISOString());
+  }
+
+  // Attachments: uploads land on disk first; the row is created unclaimed and
+  // later bound to the user message that references it.
+  createAttachment(a: { id: string; session_id: string; kind: "image" | "file"; name: string; mime: string; size: number; path: string }): void {
+    this.db
+      .prepare("INSERT INTO attachments (id, session_id, message_id, kind, name, mime, size, path, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)")
+      .run(a.id, a.session_id, a.kind, a.name, a.mime, a.size, a.path, new Date().toISOString());
+  }
+
+  getUnclaimedAttachments(sessionId: string, ids: string[]): AttachmentRecord[] {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => "?").join(",");
+    return this.db
+      .prepare(`SELECT * FROM attachments WHERE session_id = ? AND message_id IS NULL AND id IN (${placeholders})`)
+      .all(sessionId, ...ids) as AttachmentRecord[];
+  }
+
+  claimAttachments(messageId: string, sessionId: string, ids: string[]): AttachmentRecord[] {
+    const rows = this.getUnclaimedAttachments(sessionId, ids);
+    for (const r of rows) {
+      this.db.prepare("UPDATE attachments SET message_id = ? WHERE id = ? AND session_id = ?").run(messageId, r.id, sessionId);
+    }
+    return rows;
+  }
+
+  getMessageAttachments(messageId: string): AttachmentRecord[] {
+    return this.db.prepare("SELECT * FROM attachments WHERE message_id = ? ORDER BY created_at ASC").all(messageId) as AttachmentRecord[];
   }
 
   getToolUsage(sessionId: string): {

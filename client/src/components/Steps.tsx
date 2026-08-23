@@ -3,7 +3,7 @@ import { Terminal, Globe, FileCode, Brain, Maximize2, Minimize2, Loader2 } from 
 
 export type StepItem =
   | { kind: "think"; text: string }
-  | { kind: "tool"; id: string; name: string; args: any; obs?: string };
+  | { kind: "tool"; id: string; name: string; args: any; obs?: string; imageUrl?: string };
 
 export type StepEntry = { item: StepItem; streaming?: boolean; running?: boolean };
 
@@ -103,6 +103,12 @@ export const StepListItem: React.FC<{ entry: StepEntry; idx: number; sessionId?:
             ? JSON.stringify(item.args, null, 2)
             : String(item.args)}
       </pre>
+
+      {!isThink && item.imageUrl && (
+        <a href={item.imageUrl} target="_blank" rel="noreferrer" className="block">
+          <img src={item.imageUrl} alt="view_image result" className="max-h-56 rounded-lg border border-zinc-800" />
+        </a>
+      )}
 
       {!isThink && item.obs && (
         <pre className="p-2.5 rounded bg-zinc-900 text-zinc-200 text-[11px] font-mono leading-relaxed overflow-x-auto max-h-52 border border-zinc-800 whitespace-pre-wrap">

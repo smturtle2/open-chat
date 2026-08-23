@@ -198,6 +198,65 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
   check("flow: no orphan assistant answers", orphans === 0);
 }
 
+// 11b. IMAGE OBSERVATIONS: envelope re-hydration, receipt collapse, and
+// missing-file degradation.
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const pathMod = await import("node:path");
+  const dir = fs.mkdtempSync(pathMod.join(os.tmpdir(), "oc-img-"));
+  fs.mkdirSync(pathMod.join(dir, "uploads"));
+  fs.writeFileSync(
+    pathMod.join(dir, "uploads", "red.png"),
+    Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC", "base64")
+  );
+
+  const imgObs = JSON.stringify({ __obs__: "image", text: "uploads/red.png · 1KB", path: "uploads/red.png" });
+
+  // (a) Fresh observation re-hydrates to multipart vision content.
+  {
+    const recs = [
+      user("뭐가 보여?"),
+      call("c1", "view_image", { path: "uploads/red.png" }),
+      { role: "tool", tool_call_id: "c1", name: "view_image", content: imgObs },
+      assistant("답변"),
+    ];
+    const { messages } = buildHistory(recs, { workspaceDir: dir });
+    const toolMsg = messages.find((m) => m.role === "tool")!;
+    const parts = Array.isArray(toolMsg.content) ? (toolMsg.content as any[]) : null;
+    check("image: fresh view rehydrates to parts", !!parts && parts.length === 2 && typeof parts[1].image_url.url === "string" && parts[1].image_url.url.startsWith("data:image/png;base64,"));
+  }
+
+  // (b) Aged-out observation collapses to a plain receipt — bytes dropped.
+  {
+    const recs: HistoryRecord[] = [
+      user("t"),
+      call("v", "view_image", { path: "red.png" }),
+      { role: "tool", tool_call_id: "v", name: "view_image", content: imgObs },
+    ];
+    for (let i = 0; i < 10; i++) {
+      recs.push(call("k" + i, "bash", { cmd: "x" }));
+      recs.push(obs("k" + i, "z".repeat(200)));
+    }
+    const { messages } = buildHistory(recs, { workspaceDir: dir, recentFullTools: 8 });
+    const vMsg = messages.find((m) => m.role === "tool" && m.tool_call_id === "v")!;
+    check("image: aged view collapses to receipt", typeof vMsg.content === "string" && String(vMsg.content).includes("[view_image · ok · uploads/red.png"));
+  }
+
+  // (c) Missing file degrades to a text note instead of failing the request.
+  {
+    const badObs = JSON.stringify({ __obs__: "image", text: "gone.png · 1KB", path: "gone.png" });
+    const recs = [
+      user("q"),
+      call("b", "view_image", { path: "gone.png" }),
+      { role: "tool", tool_call_id: "b", name: "view_image", content: badObs },
+    ];
+    const { messages } = buildHistory(recs, { workspaceDir: dir });
+    const last = messages[messages.length - 1];
+    check("image: missing file degrades to note", typeof last.content === "string" && String(last.content).includes("이미지 유실"));
+  }
+}
+
 // 12. CHRONOLOGY INVARIANT: the replayed payload must preserve the real
 // execution rhythm — (words/calls) then their results, tasks in original
 // order. Retention may drop whole pieces but NEVER reorders or reshapes

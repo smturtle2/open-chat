@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from "react";
-import { ArrowUp, Square, ChevronUp, Check } from "lucide-react";
+import { ArrowUp, Square, ChevronUp, Check, Paperclip, X } from "lucide-react";
 import { useChatStore } from "../store/useChatStore";
 import { BottomSheet } from "./BottomSheet";
 
 export const PromptInput: React.FC = () => {
   const [content, setContent] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { isGenerating, sendMessage, stopGeneration, models, selectedModel, setSelectedModel } = useChatStore();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const currentSessionId = useChatStore((st) => st.currentSessionId);
+  const { isGenerating, sendMessage, stopGeneration, models, selectedModel, setSelectedModel, pendingAttachments, uploading, addFiles, removePendingAttachment } = useChatStore();
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelFilter, setModelFilter] = useState("");
   const filterRef = useRef<HTMLInputElement>(null);
@@ -31,12 +33,26 @@ export const PromptInput: React.FC = () => {
   };
 
   const handleSubmit = () => {
-    if (!content.trim() || isGenerating) return;
+    if (!content.trim() || isGenerating || uploading) return;
     sendMessage(content);
     setContent("");
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (files.length > 0) {
+      e.preventDefault();
+      addFiles(files);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length > 0) addFiles(files);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -53,6 +69,7 @@ export const PromptInput: React.FC = () => {
   };
 
   const hasText = content.trim().length > 0;
+  const hasAttachments = pendingAttachments.length > 0;
 
   // Filtered models
   const filteredModels = modelFilter.trim()
@@ -64,7 +81,36 @@ export const PromptInput: React.FC = () => {
 
   return (
     <div className="w-full max-w-3xl mx-auto px-4 pb-4">
-      <div className="relative flex flex-col bg-white dark:bg-[#1e1e1e] rounded-2xl border border-zinc-300 dark:border-zinc-700/80 shadow-xs focus-within:border-zinc-400 dark:focus-within:border-zinc-500 transition-all">
+      <div
+        className="relative flex flex-col bg-white dark:bg-[#1e1e1e] rounded-2xl border border-zinc-300 dark:border-zinc-700/80 shadow-xs focus-within:border-zinc-400 dark:focus-within:border-zinc-500 transition-all"
+        onPaste={handlePaste}
+        onDrop={handleDrop}
+        onDragOver={(e) => e.preventDefault()}
+      >
+        {/* Attachment chips */}
+        {(hasAttachments || uploading) && (
+          <div className="flex flex-wrap gap-2 px-3 pt-3">
+            {pendingAttachments.map((a) => (
+              <div key={a.id} className="group relative flex items-center gap-1.5 pl-1.5 pr-6 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-[11px] font-mono text-zinc-600 dark:text-zinc-300 max-w-[220px]">
+                {a.kind === "image" ? (
+                  <img src={`/api/sessions/${currentSessionId}/files/${a.path}`} alt="" className="w-6 h-6 rounded object-cover flex-shrink-0" />
+                ) : (
+                  <Paperclip className="w-3 h-3 flex-shrink-0" />
+                )}
+                <span className="truncate">{a.name}</span>
+                <button
+                  onClick={() => a.id && removePendingAttachment(a.id)}
+                  className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
+                  title="Remove"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+            {uploading && <div className="px-2 py-1 text-[11px] font-mono text-zinc-400 animate-pulse">uploading…</div>}
+          </div>
+        )}
+
         {/* Textarea */}
         <div className="flex items-end gap-2 p-2 pl-3.5">
           <textarea
@@ -104,6 +150,25 @@ export const PromptInput: React.FC = () => {
         {/* Bottom bar with model selector trigger */}
         <div className="flex items-center px-3 pb-2 pt-0">
           <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isGenerating || uploading || hasAttachments && pendingAttachments.length >= 8}
+            className="mr-1 p-1.5 rounded-md text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Attach files or images"
+          >
+            <Paperclip className="w-4 h-4" />
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files?.length) addFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <button
+            data-model-trigger
             onClick={() => setModelMenuOpen(true)}
             className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[11.5px] font-mono text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer select-none"
           >

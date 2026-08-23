@@ -53,15 +53,17 @@ export const ChatView: React.FC = () => {
 
   const isEmpty = messages.length === 0 && !isGenerating;
 
-  // Build tool observations lookup map
+  // Build tool observations lookup map (plus image URLs for view_image results)
   const toolObservations = React.useMemo(() => {
     const map: Record<string, string> = {};
+    const imageUrls: Record<string, string> = {};
     for (const msg of messages) {
       if (msg.role === "tool" && msg.tool_call_id) {
         map[msg.tool_call_id] = msg.content;
+        if (msg.imageUrl) imageUrls[msg.tool_call_id] = msg.imageUrl;
       }
     }
-    return map;
+    return { map, imageUrls };
   }, [messages]);
 
   // Persisted content only.
@@ -102,8 +104,8 @@ export const ChatView: React.FC = () => {
               args = { raw: args };
             }
           }
-          const obs = toolObservations[tc.id];
-          pendingEntries.push({ item: { kind: "tool", id: tc.id, name, args, obs } });
+          const obs = toolObservations.map[tc.id];
+          pendingEntries.push({ item: { kind: "tool", id: tc.id, name, args, obs, imageUrl: toolObservations.imageUrls[tc.id] } });
         }
 
         // If this assistant message contains text content, flush pending steps first
@@ -297,6 +299,27 @@ export const ChatView: React.FC = () => {
                             </div>
                           ) : (
                             <>
+                              {turn.userMsg.attachments && turn.userMsg.attachments.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5 justify-end">
+                                  {turn.userMsg.attachments.map((a) =>
+                                    a.kind === "image" ? (
+                                      <a
+                                        key={a.path}
+                                        href={`/api/sessions/${currentSessionId}/files/${a.path}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="block rounded-xl overflow-hidden border border-zinc-200 dark:border-zinc-700 hover:opacity-90 transition-opacity"
+                                      >
+                                        <img src={`/api/sessions/${currentSessionId}/files/${a.path}`} alt={a.name} className="max-h-44 max-w-[220px] object-cover" />
+                                      </a>
+                                    ) : (
+                                      <span key={a.path} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-[11px] font-mono text-zinc-600 dark:text-zinc-300">
+                                        {a.name} · {(a.size / 1024).toFixed(0)}KB
+                                      </span>
+                                    )
+                                  )}
+                                </div>
+                              )}
                               <div className="bg-[#f4f4f5] dark:bg-[#27272a] text-zinc-900 dark:text-zinc-100 px-4 py-2.5 rounded-2xl text-[15px] leading-relaxed whitespace-pre-wrap">
                                 <MarkdownView content={turn.userMsg.content} />
                               </div>

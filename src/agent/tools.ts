@@ -25,6 +25,45 @@ export interface ToolDefinition {
   };
 }
 
+// Multipart observation (e.g. view_image): text summary plus content parts
+// replayed verbatim into the tool message on the wire.
+export interface ToolObservation {
+  text: string;
+  kind?: "image";
+  path?: string;
+}
+
+// Envelope persisted in the tool record's content column. Image BYTES are not
+// stored — only the workspace-relative path; buildHistory re-reads the file at
+// prompt-build time and degrades to plain text if it has vanished.
+export function serializeObservation(obs: ToolObservation | string): string {
+  if (typeof obs === "string") return obs;
+  return JSON.stringify({ __obs__: obs.kind ?? "image", text: obs.text, path: obs.path });
+}
+
+export function parseObservation(content: string): ToolObservation | null {
+  if (!content.startsWith("{")) return null;
+  try {
+    const o = JSON.parse(content);
+    if (o && o.__obs__ === "image" && typeof o.path === "string") {
+      return { text: typeof o.text === "string" ? o.text : "", kind: "image", path: o.path };
+    }
+  } catch {}
+  return null;
+}
+
+// Content-sniffing beats extensions: uploads are frequently misnamed
+// (screenshot saved as .bin, JPEG named .png).
+export function sniffImageMime(buf: Buffer): string | null {
+  if (buf.length < 12) return null;
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "image/png";
+  if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg";
+  const head = buf.subarray(0, 6).toString("latin1");
+  if (head === "GIF87a" || head === "GIF89a") return "image/gif";
+  if (buf.subarray(0, 4).toString("latin1") === "RIFF" && buf.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
+  return null;
+}
+
 export class ToolRegistry {
   private dockerReady: boolean | null = null;
   private imageReady = false;
@@ -268,6 +307,20 @@ export class ToolRegistry {
       {
         type: "function",
         function: {
+          name: "view_image",
+          description: "View an image file from the session workspace (user uploads or generated images). Returns the image visually so you can see its pixels. Use when a task involves screenshots, photos, diagrams, or design references. Supported: PNG, JPEG, GIF, WebP up to 5MB.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Image path relative to the workspace root (e.g. uploads/screenshot.png)." },
+            },
+            required: ["path"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
           name: "write_file",
           description: "Create or overwrite a file in the session workspace with the given content.",
           parameters: {
@@ -332,11 +385,11 @@ export class ToolRegistry {
     ];
   }
 
-  async execute(name: string, args: Record<string, any>, sessionId: string = "default", signal?: AbortSignal): Promise<string> {
+  async execute(name: string, args: Record<string, any>, sessionId: string = "default", signal?: AbortSignal): Promise<string | ToolObservation> {
     const workspaceDir = this.getWorkspaceDir(sessionId);
 
     try {
-      let rawResult = "";
+      let rawResult: string | ToolObservation = "";
       switch (name) {
         case "web_fetch":
           rawResult = await this.scrapeWebpage(args, sessionId, workspaceDir, signal);
@@ -358,6 +411,10 @@ export class ToolRegistry {
 
         case "read_file":
           rawResult = await this.fsOp(sessionId, workspaceDir, { op: "read", path: args.path || "", offset: args.offset, limit: args.limit }, signal);
+          break;
+
+        case "view_image":
+          rawResult = await this.viewImage(sessionId, workspaceDir, String(args.path || ""));
           break;
 
         case "write_file":
@@ -582,8 +639,7 @@ export class ToolRegistry {
   // File operations execute inside the session container via fs_runner.py.
   // No host-side path validation is needed: the worst case is the agent
   // modifying its own (disposable) container filesystem, never the host.
-  private async fsOp(sessionId: string, workspaceDir: string, req: Record<string, any>, signal?: AbortSignal): Promise<string> {
-    const container = await this.getContainer(sessionId, workspaceDir);
+  private async fsOp(sessionId: string, workspaceDir: string, req: Record<string, any>, signal?: AbortSignal): Promise<string> {    const container = await this.getContainer(sessionId, workspaceDir);
     const r = await this.runDockerExec(container, ["python3", "/opt/agent/fs_runner.py"], 30000, "File operation", JSON.stringify(req), signal);
     if (!r.out.trim() && r.code !== 0) {
       return `Error: ${r.err.trim() || "file operation failed"}`;
@@ -592,6 +648,42 @@ export class ToolRegistry {
       return this.settle("read_file", sessionId, r.out.trim());
     }
     return r.out.trim();
+  }
+
+  // Host-side image reader for vision input. The workspace volume is mounted
+  // into the sandbox, so uploads written by the server are visible here by
+  // the same relative path. Containment is enforced host-side (realpath) and
+  // the image type is detected from magic bytes, not the extension.
+  private static readonly IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+  private async viewImage(sessionId: string, workspaceDir: string, relPath: string): Promise<ToolObservation | string> {
+    const clean = relPath.replace(/^\/+/, "");
+    if (!clean) return "Error: an image path relative to the workspace root is required";
+
+    let fullReal: string;
+    let wsReal: string;
+    try {
+      fullReal = fs.realpathSync(path.resolve(workspaceDir, clean));
+      wsReal = fs.realpathSync(workspaceDir);
+    } catch {
+      return `Error: image not found at ${clean}`;
+    }
+    const rel = path.relative(wsReal, fullReal);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) return `Error: image path escapes the workspace`;
+    if (!fs.existsSync(fullReal) || !fs.statSync(fullReal).isFile()) return `Error: image not found at ${clean}`;
+
+    const size = fs.statSync(fullReal).size;
+    if (size > ToolRegistry.IMAGE_MAX_BYTES) {
+      return `Error: image too large (${(size / 1024 / 1024).toFixed(1)}MB) — limit is 5MB. Downscale or crop it first.`;
+    }
+
+    const buf = fs.readFileSync(fullReal);
+    const mime = sniffImageMime(buf);
+    if (!mime) return `Error: ${clean} is not a decodable image (PNG/JPEG/GIF/WebP). If it is an image in another format, convert it first.`;
+
+    db.recordToolUsage(sessionId, "view_image", buf.length, buf.length);
+    const kb = size >= 1024 ? `${(size / 1024).toFixed(0)}KB` : `${size}B`;
+    return { text: `${clean} · ${kb}`, kind: "image", path: clean };
   }
 
   private async runPython(code: string, sessionId: string, workspaceDir: string, signal?: AbortSignal): Promise<string> {
