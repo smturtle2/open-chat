@@ -1,0 +1,9 @@
+node_modules/
+client/node_modules/
+client/dist/
+openchat.db
+openchat.db-wal
+openchat.db-shm
+.env
+*.log
+/tmp/
