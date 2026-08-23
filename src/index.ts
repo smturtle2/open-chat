@@ -72,7 +72,7 @@ app.delete("/api/sessions/:id", (c) => {
   const id = c.req.param("id");
   coordinator.interrupt(id);
   db.deleteSession(id);
-  tools.cleanupContainer(id);
+  void tools.cleanupContainer(id);
   return c.json({ success: true });
 });
 
@@ -206,10 +206,8 @@ app.post("/api/sessions/:id/messages/:messageId/edit", async (c) => {
   const newContent = (body.content || "").trim();
   if (!newContent) return c.json({ error: "Content is required" }, 400);
 
-  coordinator.interrupt(id);
-  db.updateMessageContent(id, messageId, newContent);
-  db.truncateAfterMessage(id, messageId);
-  coordinator.regenerate(id);
+  // Coordinator waits for the old loop to drain before mutating history.
+  coordinator.regenerateFrom(id, messageId, newContent);
   return c.json({ status: "submitted" });
 });
 
@@ -225,9 +223,7 @@ app.post("/api/sessions/:id/messages/:messageId/regenerate", async (c) => {
     return c.json({ error: "Target user message not found" }, 404);
   }
 
-  coordinator.interrupt(id);
-  db.truncateAfterMessage(id, messageId);
-  coordinator.regenerate(id);
+  coordinator.regenerateFrom(id, messageId, null);
   return c.json({ status: "submitted" });
 });
 
@@ -280,7 +276,10 @@ if (fs.existsSync(clientDist)) {
 // Start HTTP Server
 const port = CONFIG.PORT;
 console.log(`[OpenChat] Starting server on http://localhost:${port}`);
-tools.cleanupAllContainers();
+if (!CONFIG.LLM_API_KEY) {
+  console.error("[OpenChat] LLM_API_KEY is not set — chat requests will fail. Configure it in /root/openchat/.env");
+}
+void tools.cleanupAllContainers();
 db.pruneToolOutputs();
 setInterval(() => db.pruneToolOutputs(), 24 * 3600_000).unref();
 serve({

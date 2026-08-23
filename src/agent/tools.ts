@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,7 +7,10 @@ import { CONFIG } from "../config.js";
 import { db } from "../db/database.js";
 import { compactor, truncateDirectional, pageLines, type TruncateBias } from "./compactor.js";
 
+import { promisify } from "node:util";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const execFileAsync = promisify(execFile);
 
 export interface ToolDefinition {
   type: "function";
@@ -40,23 +43,30 @@ export class ToolRegistry {
     return "oc_sb_" + sessionId.replace(/[^a-zA-Z0-9_.-]/g, "_");
   }
 
-  private dockerAvailable(): boolean {
+  // Non-blocking probe wrapper: resolves {ok, stdout} without throwing on
+  // non-zero exit codes (execFile rejects on those).
+  private async dockerRun(args: string[], timeoutMs: number): Promise<{ ok: boolean; out: string }> {
+    try {
+      const { stdout } = await execFileAsync("docker", args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 });
+      return { ok: true, out: stdout };
+    } catch (err: any) {
+      return { ok: false, out: String(err?.stdout ?? "") };
+    }
+  }
+
+  private async dockerAvailable(): Promise<boolean> {
     if (this.dockerReady === null) {
-      try {
-        const r = spawnSync("docker", ["info", "--format", "{{.ServerVersion}}"], { timeout: 15000 });
-        this.dockerReady = r.status === 0;
-      } catch {
-        this.dockerReady = false;
-      }
-      if (!this.dockerReady) console.warn("[sandbox] Docker unavailable; bash tool disabled");
+      const r = await this.dockerRun(["info", "--format", "{{.ServerVersion}}"], 15000);
+      this.dockerReady = r.ok;
+      if (!r.ok) console.warn("[sandbox] Docker unavailable; bash tool disabled");
     }
     return this.dockerReady;
   }
 
   private async ensureImage(): Promise<boolean> {
     if (this.imageReady) return true;
-    const inspect = spawnSync("docker", ["image", "inspect", CONFIG.SANDBOX_IMAGE], { timeout: 30000 });
-    if (inspect.status === 0) {
+    const inspect = await this.dockerRun(["image", "inspect", CONFIG.SANDBOX_IMAGE], 30000);
+    if (inspect.ok) {
       this.imageReady = true;
       return true;
     }
@@ -78,25 +88,49 @@ export class ToolRegistry {
     console.log("[sandbox] Building sandbox image (first run only)...");
     const ok = await new Promise<boolean>((resolve) => {
       const child = spawn("docker", ["build", "-f", dfPath, "-t", CONFIG.SANDBOX_IMAGE, tmpDir]);
-      child.stderr?.on("data", () => {});
-      child.on("close", (code) => resolve(code === 0));
+      let errTail = "";
+      child.stderr?.on("data", (d: Buffer) => {
+        errTail = (errTail + d.toString()).slice(-500);
+      });
+      child.on("close", (code) => {
+        if (code !== 0) console.error(`[sandbox] Image build failed:\n${errTail}`);
+        resolve(code === 0);
+      });
       child.on("error", () => resolve(false));
     });
     this.imageReady = ok;
-    if (!ok) console.error("[sandbox] Sandbox image build failed");
     return ok;
   }
 
+  // Timeout/abort kills a command by restarting the container. Those restarts
+  // happen in the background; ensureContainer awaits any pending one for the
+  // container before inspecting, so calls never race a mid-restart state.
+  private pendingRestarts = new Map<string, Promise<void>>();
+
+  private restartContainer(container: string): Promise<void> {
+    const prev = this.pendingRestarts.get(container);
+    if (prev) return prev;
+    const p = execFileAsync("docker", ["restart", container], { timeout: 60000 })
+      .then(() => undefined, () => undefined)
+      .finally(() => {
+        if (this.pendingRestarts.get(container) === p) this.pendingRestarts.delete(container);
+      });
+    this.pendingRestarts.set(container, p);
+    return p;
+  }
+
   private async ensureContainer(sessionId: string, workspaceDir: string): Promise<string | null> {
-    if (!this.dockerAvailable()) return null;
+    if (!(await this.dockerAvailable())) return null;
     const imageOk = await this.ensureImage();
     if (!imageOk) return null;
 
     const name = this.containerName(sessionId);
-    const inspect = spawnSync("docker", ["container", "inspect", "--format", "{{.State.Running}}", name], { timeout: 15000 });
-    if (inspect.status === 0) {
-      if (inspect.stdout.toString().trim() !== "true") {
-        spawnSync("docker", ["start", name], { timeout: 60000 });
+    await this.pendingRestarts.get(name);
+
+    const inspect = await this.dockerRun(["container", "inspect", "--format", "{{.State.Running}}", name], 15000);
+    if (inspect.ok) {
+      if (inspect.out.trim() !== "true") {
+        await this.dockerRun(["start", name], 60000);
       }
       return name;
     }
@@ -114,33 +148,28 @@ export class ToolRegistry {
       CONFIG.SANDBOX_IMAGE,
       "bash", "-c", "sleep infinity",
     ];
-    spawnSync("docker", runArgs, { timeout: 120000 });
+    await execFileAsync("docker", runArgs, { timeout: 120000 }).catch(() => undefined);
 
-    const check = spawnSync("docker", ["container", "inspect", "--format", "{{.State.Running}}", name], { timeout: 15000 });
-    if (check.status === 0 && check.stdout.toString().trim() === "true") return name;
+    const check = await this.dockerRun(["container", "inspect", "--format", "{{.State.Running}}", name], 15000);
+    if (check.ok && check.out.trim() === "true") return name;
 
     // possible race with a parallel call — try starting whatever exists
-    spawnSync("docker", ["start", name], { timeout: 60000 });
-    const check2 = spawnSync("docker", ["container", "inspect", "--format", "{{.State.Running}}", name], { timeout: 15000 });
-    if (check2.status === 0 && check2.stdout.toString().trim() === "true") return name;
+    await this.dockerRun(["start", name], 60000);
+    const check2 = await this.dockerRun(["container", "inspect", "--format", "{{.State.Running}}", name], 15000);
+    if (check2.ok && check2.out.trim() === "true") return name;
     return null;
   }
 
-  cleanupContainer(sessionId: string): void {
-    try {
-      spawnSync("docker", ["rm", "-f", this.containerName(sessionId)], { timeout: 30000 });
-    } catch {}
+  async cleanupContainer(sessionId: string): Promise<void> {
+    await execFileAsync("docker", ["rm", "-f", this.containerName(sessionId)], { timeout: 30000 }).catch(() => undefined);
   }
 
-  cleanupAllContainers(): void {
-    try {
-      const ps = spawnSync("docker", ["ps", "-aq", "--filter", "name=oc_sb_"], { timeout: 20000 });
-      if (ps.status !== 0) return;
-      const ids = ps.stdout.toString().trim();
-      if (!ids) return;
-      spawnSync("docker", ["rm", "-f", ...ids.split("\n")], { timeout: 60000 });
-      console.log(`[sandbox] Removed ${ids.split("\n").length} stale sandbox container(s)`);
-    } catch {}
+  async cleanupAllContainers(): Promise<void> {
+    const ps = await this.dockerRun(["ps", "-aq", "--filter", "name=oc_sb_"], 20000);
+    if (!ps.ok || !ps.out.trim()) return;
+    const ids = ps.out.trim().split("\n");
+    await execFileAsync("docker", ["rm", "-f", ...ids], { timeout: 60000 }).catch(() => undefined);
+    console.log(`[sandbox] Removed ${ids.length} stale sandbox container(s)`);
   }
 
   // Resolves relPath under workspaceDir or returns null when the path escapes
@@ -418,8 +447,10 @@ export class ToolRegistry {
 
   // Runs `docker exec` inside the session container. Output is capped,
   // timeout/abort kills the command via container restart (the workspace
-  // volume survives; only the sleep-infinity entrypoint re-runs).
-  private runDockerExec(
+  // volume survives; only the sleep-infinity entrypoint re-runs). The kill is
+  // issued asynchronously — the partial result resolves immediately instead of
+  // blocking the event loop on `docker restart`.
+  private async runDockerExec(
     container: string,
     argv: string[],
     timeoutMs: number,
@@ -427,89 +458,92 @@ export class ToolRegistry {
     stdinData?: string,
     signal?: AbortSignal
   ): Promise<{ out: string; err: string; code: number | null; truncated: boolean; timedOut?: boolean; interrupted?: boolean; elapsedMs?: number }> {
-    return new Promise((resolve) => {
-      const startedAt = Date.now();
-      const child = spawn("docker", [
-        "exec", "-i",
-        "-w", "/workspace",
-        "-e", "TERM=xterm-256color",
-        "-e", "PAGER=cat",
-        "-e", "PIP_DISABLE_PIP_VERSION_CHECK=1",
-        "-e", "PYTHONUNBUFFERED=1",
-        container,
-        ...argv,
-      ]);
+    const startedAt = Date.now();
+    const child = spawn("docker", [
+      "exec", "-i",
+      "-w", "/workspace",
+      "-e", "TERM=xterm-256color",
+      "-e", "PAGER=cat",
+      "-e", "PIP_DISABLE_PIP_VERSION_CHECK=1",
+      "-e", "PYTHONUNBUFFERED=1",
+      container,
+      ...argv,
+    ]);
 
-      let stdout = "";
-      let stderr = "";
-      let truncated = false;
-      let finished = false;
-      const cap = CONFIG.SANDBOX_OUTPUT_CAP;
-      const append = (dst: "out" | "err", d: Buffer) => {
-        const cur = dst === "out" ? stdout : stderr;
-        if (cur.length >= cap) { truncated = true; return; }
-        const next = cur + d.toString();
-        if (next.length > cap) {
-          truncated = true;
-          if (dst === "out") stdout = next.slice(0, cap);
-          else stderr = next.slice(0, cap);
-        } else {
-          if (dst === "out") stdout = next;
-          else stderr = next;
-        }
-      };
-
-      let killedByUs = false;
-      const killRunning = () => {
-        killedByUs = true;
-        try { spawnSync("docker", ["restart", container], { timeout: 60000 }); } catch {}
-      };
-
-      const timer = setTimeout(() => {
-        if (!finished) {
-          finished = true;
-          const elapsedMs = Date.now() - startedAt;
-          killRunning();
-          resolve({ out: stdout, err: `${label} timed out (${Math.round(timeoutMs / 1000)}s limit)\n${stderr}`, code: null, truncated, timedOut: true, elapsedMs });
-        }
-      }, timeoutMs);
-
-      const abortHandler = () => {
-        if (!finished) {
-          finished = true;
-          clearTimeout(timer);
-          const elapsedMs = Date.now() - startedAt;
-          killRunning();
-          resolve({ out: stdout, err: `${label} aborted by user.`, code: -1, truncated, interrupted: true, elapsedMs });
-        }
-      };
-
-      if (signal) {
-        if (signal.aborted) { abortHandler(); return; }
-        signal.addEventListener("abort", abortHandler, { once: true });
+    let stdout = "";
+    let stderr = "";
+    let truncated = false;
+    const cap = CONFIG.SANDBOX_OUTPUT_CAP;
+    const append = (dst: "out" | "err", d: Buffer) => {
+      const cur = dst === "out" ? stdout : stderr;
+      if (cur.length >= cap) { truncated = true; return; }
+      const next = cur + d.toString();
+      if (next.length > cap) {
+        truncated = true;
+        if (dst === "out") stdout = next.slice(0, cap);
+        else stderr = next.slice(0, cap);
+      } else {
+        if (dst === "out") stdout = next;
+        else stderr = next;
       }
+    };
 
-      child.stdout?.on("data", (d) => append("out", d));
-      child.stderr?.on("data", (d) => append("err", d));
-      if (stdinData !== undefined) child.stdin?.end(stdinData);
-      child.on("close", (code) => {
-        if (!finished) {
-          finished = true;
-          clearTimeout(timer);
-          if (killedByUs) {
-            // Our watchdog or the user's abort triggered the restart-kill;
-            // classify so formatExec can mark the output as partial.
-            const userAborted = signal?.aborted === true;
-            resolve({ out: stdout, err: stderr, code, truncated, timedOut: !userAborted, interrupted: userAborted, elapsedMs: Date.now() - startedAt });
-          } else {
-            resolve({ out: stdout, err: stderr, code, truncated });
-          }
-        }
+    type ExecResult = { out: string; err: string; code: number | null; truncated: boolean; timedOut?: boolean; interrupted?: boolean; elapsedMs?: number };
+    let settled = false;
+    let release!: (r: ExecResult) => void;
+    const done = new Promise<ExecResult>((res) => (release = res));
+    const settle = (r: ExecResult) => {
+      if (!settled) {
+        settled = true;
+        release(r);
+      }
+    };
+    const killAndSettle = (partial: { out: string; err: string; code: number | null; truncated: boolean; timedOut?: boolean; interrupted?: boolean }) => {
+      const elapsedMs = Date.now() - startedAt;
+      settle({ ...partial, elapsedMs });
+      void this.restartContainer(container);
+    };
+
+    const timer = setTimeout(() => {
+      killAndSettle({
+        out: stdout,
+        err: `${label} timed out (${Math.round(timeoutMs / 1000)}s limit)\n${stderr}`,
+        code: null,
+        truncated,
+        timedOut: true,
       });
-      child.on("error", (err) => {
-        if (!finished) { finished = true; clearTimeout(timer); resolve({ out: "", err: err.message, code: -1, truncated }); }
+    }, timeoutMs);
+
+    const abortHandler = () => {
+      clearTimeout(timer);
+      killAndSettle({
+        out: stdout,
+        err: `${label} aborted by user.`,
+        code: -1,
+        truncated,
+        interrupted: true,
       });
+    };
+
+    if (signal) {
+      if (signal.aborted) { clearTimeout(timer); abortHandler(); }
+      else signal.addEventListener("abort", abortHandler, { once: true });
+    }
+
+    child.stdout?.on("data", (d) => append("out", d));
+    child.stderr?.on("data", (d) => append("err", d));
+    if (stdinData !== undefined) child.stdin?.end(stdinData);
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      settle({ out: stdout, err: stderr, code, truncated });
     });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      settle({ out: "", err: err.message, code: -1, truncated });
+    });
+
+    return done;
   }
 
   private formatExec(r: { out: string; err: string; code: number | null; truncated: boolean; timedOut?: boolean; interrupted?: boolean; elapsedMs?: number }): string {
