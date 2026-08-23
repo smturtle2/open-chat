@@ -57,6 +57,34 @@ export class AgentHarness {
       let currentContent = "";
       let inThinkTag = false;
       let tagBuffer = "";
+
+      // Streamed deltas hit the DB in ~50ms batches instead of one INSERT
+      // per token chunk. Order is preserved (single writer); the UI only
+      // needs the aggregate text, so the coalescing delay is invisible.
+      let pendingThoughtDelta = "";
+      let pendingContentDelta = "";
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+      const flushDeltas = () => {
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        if (pendingThoughtDelta) {
+          db.appendEvent(sessionId, "thought_delta", { delta: pendingThoughtDelta });
+          pendingThoughtDelta = "";
+        }
+        if (pendingContentDelta) {
+          db.appendEvent(sessionId, "content_delta", { delta: pendingContentDelta });
+          pendingContentDelta = "";
+        }
+      };
+      const queueThoughtDelta = (d: string) => {
+        pendingThoughtDelta += d;
+        currentThought += d;
+        if (!flushTimer) flushTimer = setTimeout(flushDeltas, 50);
+      };
+      const queueContentDelta = (d: string) => {
+        pendingContentDelta += d;
+        currentContent += d;
+        if (!flushTimer) flushTimer = setTimeout(flushDeltas, 50);
+      };
       const toolCallsList: StreamingToolCall[] = [];
       const toolNameSequence: string[] = [];
       let orphanArgBuffer = "";
@@ -150,8 +178,7 @@ export class AgentHarness {
                 (typeof delta.thought === "string" ? delta.thought : "") ||
                 (typeof delta.thinking === "string" ? delta.thinking : "");
               if (reasoningDelta) {
-                currentThought += reasoningDelta;
-                db.appendEvent(sessionId, "thought_delta", { delta: reasoningDelta });
+                queueThoughtDelta(reasoningDelta);
               }
 
               // 2. Content delta with split-tag safe <think> parser
@@ -165,8 +192,7 @@ export class AgentHarness {
                     if (openIdx !== -1) {
                       const before = tagBuffer.slice(0, openIdx);
                       if (before) {
-                        currentContent += before;
-                        db.appendEvent(sessionId, "content_delta", { delta: before });
+                        queueContentDelta(before);
                       }
                       inThinkTag = true;
                       tagBuffer = tagBuffer.slice(openIdx + 7);
@@ -182,14 +208,12 @@ export class AgentHarness {
                       if (partialLen > 0) {
                         const safeText = tagBuffer.slice(0, -partialLen);
                         if (safeText) {
-                          currentContent += safeText;
-                          db.appendEvent(sessionId, "content_delta", { delta: safeText });
+                          queueContentDelta(safeText);
                         }
                         tagBuffer = tagBuffer.slice(-partialLen);
                         break;
                       } else {
-                        currentContent += tagBuffer;
-                        db.appendEvent(sessionId, "content_delta", { delta: tagBuffer });
+                        queueContentDelta(tagBuffer);
                         tagBuffer = "";
                       }
                     }
@@ -198,8 +222,7 @@ export class AgentHarness {
                     if (closeIdx !== -1) {
                       const thoughtPart = tagBuffer.slice(0, closeIdx);
                       if (thoughtPart) {
-                        currentThought += thoughtPart;
-                        db.appendEvent(sessionId, "thought_delta", { delta: thoughtPart });
+                        queueThoughtDelta(thoughtPart);
                       }
                       inThinkTag = false;
                       tagBuffer = tagBuffer.slice(closeIdx + 8);
@@ -215,14 +238,12 @@ export class AgentHarness {
                       if (partialLen > 0) {
                         const safeThought = tagBuffer.slice(0, -partialLen);
                         if (safeThought) {
-                          currentThought += safeThought;
-                          db.appendEvent(sessionId, "thought_delta", { delta: safeThought });
+                          queueThoughtDelta(safeThought);
                         }
                         tagBuffer = tagBuffer.slice(-partialLen);
                         break;
                       } else {
-                        currentThought += tagBuffer;
-                        db.appendEvent(sessionId, "thought_delta", { delta: tagBuffer });
+                        queueThoughtDelta(tagBuffer);
                         tagBuffer = "";
                       }
                     }
@@ -292,16 +313,13 @@ export class AgentHarness {
         }
 
         if (tagBuffer) {
-          if (inThinkTag) {
-            currentThought += tagBuffer;
-            db.appendEvent(sessionId, "thought_delta", { delta: tagBuffer });
-          } else {
-            currentContent += tagBuffer;
-            db.appendEvent(sessionId, "content_delta", { delta: tagBuffer });
-          }
+          if (inThinkTag) queueThoughtDelta(tagBuffer);
+          else queueContentDelta(tagBuffer);
           tagBuffer = "";
         }
+        flushDeltas();
       } catch (err: any) {
+        flushDeltas();
         if (signal?.aborted) {
           db.appendEvent(sessionId, "task_interrupted", { message: "Task stopped by user" });
           break;

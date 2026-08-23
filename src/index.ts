@@ -244,6 +244,9 @@ app.get("/api/sessions/:id/events", (c) => {
   return streamSSE(c, async (stream) => {
     let currentId = isNaN(lastEventId) ? 0 : lastEventId;
     let isActive = true;
+    // Poll fast while the session is actively streaming; back off when idle
+    // to keep per-connection DB load near zero.
+    let sleepMs = 100;
 
     stream.onAbort(() => {
       isActive = false;
@@ -260,8 +263,8 @@ app.get("/api/sessions/:id/events", (c) => {
         });
         currentId = event.id!;
       }
-
-      await stream.sleep(100);
+      sleepMs = events.length > 0 ? 100 : Math.min(sleepMs * 2, 1000);
+      await stream.sleep(sleepMs);
     }
   });
 });
