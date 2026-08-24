@@ -1,5 +1,6 @@
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -32,6 +33,6 @@ export const CONFIG = {
   // Replay the current task's reasoning (<think>) in history. Set
   // OPENCHAT_THOUGHT_RETENTION=off to fall back to dropping all thoughts.
   THOUGHT_RETENTION: (process.env.OPENCHAT_THOUGHT_RETENTION || "task") !== "off",
-  DB_PATH: path.resolve("/root/openchat/openchat.db"),
+  DB_PATH: path.resolve(process.env.OPENCHAT_DB_PATH || path.join(path.dirname(fileURLToPath(import.meta.url)), "../openchat.db")),
   MAX_AGENT_TURNS: parseInt(process.env.OPENCHAT_MAX_TURNS || "40", 10),
 };

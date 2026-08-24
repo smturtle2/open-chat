@@ -1,11 +1,14 @@
 import path from "node:path";
+import fs from "node:fs";
 import { CONFIG } from "../config.js";
 import { db } from "../db/database.js";
-import { tools } from "./tools.js";
+import { tools, type ToolContext } from "./tools.js";
 import { extractJsonObjects, parseToolArguments } from "./jsonUtils.js";
 import { buildHistory } from "./context.js";
 import { serializeObservation } from "./tools.js";
-import { listSkills } from "./skills.js";
+import { resolveEndpoint } from "./providers.js";
+import { buildSystemPrompt } from "./prompt.js";
+import { chatWorkspaceDir, sessionRoot } from "./sessionPaths.js";
 
 type StreamingToolCall = {
   id: string;
@@ -43,6 +46,25 @@ export class AgentHarness {
   async runAssistantTurn(sessionId: string, signal?: AbortSignal, model?: string) {
     db.updateSessionStatus(sessionId, "running");
 
+    const session = db.getSession(sessionId);
+    if (!session) {
+      return;
+    }
+    // Agent sessions work in a real host directory; chat sessions get their
+    // disposable workspace. Everything downstream (tools, prompt, history)
+    // derives from these two values.
+    const sessionRootDir = sessionRoot(session);
+    if (!fs.existsSync(sessionRootDir)) {
+      if (session.mode === "agent") {
+        db.appendEvent(sessionId, "error", { message: `작업 디렉토리가 존재하지 않습니다: ${session.workdir}` });
+        db.updateSessionStatus(sessionId, "idle");
+        return;
+      }
+      chatWorkspaceDir(sessionId);
+    }
+
+    const endpoint = resolveEndpoint({ provider: session.provider, model: model || session.model });
+
     let turn = 0;
     const maxTurns = CONFIG.MAX_AGENT_TURNS;
     const maxConsecutiveErrors = 5;
@@ -53,7 +75,12 @@ export class AgentHarness {
     // invisible message, which looks like a frozen chat from the UI side.
     let emptyCompletions = 0;
     const maxEmptyCompletions = 2;
-    const sessionWorkspace = path.join(CONFIG.WORKSPACES_ROOT, sessionId);
+
+    const toolCtx: ToolContext = {
+      sessionId,
+      mode: session.mode,
+      cwd: sessionRootDir,
+    };
 
     // Autonomous loop: runs until the model delivers a final answer without tool calls, hits the turn cap, or is aborted.
     while (turn < maxTurns) {
@@ -64,7 +91,7 @@ export class AgentHarness {
 
       turn++;
       const rawMessages = db.getMessages(sessionId);
-      const messagesForApi = await this.prepareMessages(rawMessages, sessionWorkspace);
+      const messagesForApi = await this.prepareMessages(session, sessionRootDir, rawMessages);
 
       db.appendEvent(sessionId, "turn_started", { turn });
 
@@ -112,16 +139,16 @@ export class AgentHarness {
       while (attempt < 3) {
         attempt++;
         try {
-          response = await fetch(`${CONFIG.LLM_BASE_URL}/chat/completions`, {
+          response = await fetch(`${endpoint.baseUrl}/chat/completions`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${CONFIG.LLM_API_KEY}`,
+              Authorization: `Bearer ${endpoint.apiKey}`,
             },
             body: JSON.stringify({
-              model: model || CONFIG.LLM_MODEL,
+              model: endpoint.model,
               messages: messagesForApi,
-              tools: tools.getSchemas(),
+              tools: tools.getSchemas(session.mode),
               tool_choice: "auto",
               stream: true,
             }),
@@ -281,10 +308,13 @@ export class AgentHarness {
                   if (tc.id) {
                     const existingIdx = toolCallsList.findIndex((t) => t.id === tc.id);
                     if (existingIdx === -1) {
+                      // Arguments start empty; the shared append below adds
+                      // them exactly once whether they arrived whole in this
+                      // delta or will be streamed across subsequent ones.
                       toolCallsList.push({
                         id: tc.id,
                         name: tc.function?.name || "",
-                        arguments: tc.function?.arguments || "",
+                        arguments: "",
                       });
                       activeToolIndex = toolCallsList.length - 1;
                     } else {
@@ -473,7 +503,7 @@ export class AgentHarness {
 
           let observation = "";
           try {
-            const result = await tools.execute(tc.function.name, parsedArgs, sessionId, signal);
+            const result = await tools.execute(tc.function.name, parsedArgs, toolCtx, signal);
             observation = typeof result === "string" ? result : serializeObservation(result);
           } catch (toolErr: any) {
             observation = `Tool Execution Error: ${toolErr.message || String(toolErr)}`;
@@ -514,7 +544,7 @@ export class AgentHarness {
     }
   }
 
-  private async prepareMessages(records: any[], workspaceDir: string): Promise<any[]> {
+  private async prepareMessages(session: { mode: "chat" | "agent" }, sessionRootDir: string, records: any[]): Promise<any[]> {
     // Attachment markers are appended here — prompt-only decoration. The
     // transcript stays clean; every replay still tells the model where its
     // files live.
@@ -538,68 +568,13 @@ export class AgentHarness {
       })
     );
 
-    const skills = listSkills();
-    const skillsSection =
-      skills.length === 0
-        ? ""
-        : `
-# Skills:
-Skills provide specialized instructions and workflows for specific tasks.
-Use the load_skill tool to load a skill when a task matches its description.
-<available_skills>
-${skills.map((s) => `<skill>\n<name>${s.name}</name>\n<description>${s.description.replace(/]]>/g, "")}</description>\n<location>/opt/skills/${s.name}/SKILL.md</location>\n</skill>`).join("\n")}
-</available_skills>
-Skills live under /opt/skills in your sandbox, which is WRITABLE: install new
-skills with the skill-installer skill (or by creating <name>/SKILL.md there
-yourself); they become available from your next turn.
-When a user message starts with /<name> and <name> matches an installed
-skill above, that names the skill to use: call load_skill for it FIRST,
-then follow its instructions for the rest of the message.
-`;
-
-    const systemPrompt = {
-      role: "system",
-      content: `You are OpenChat, an elite autonomous AI software engineering agent
-operating inside an isolated session sandbox (a dedicated container whose
-filesystem you can use freely; your bash/python CWD is /workspace).
-The host filesystem does not exist inside the sandbox.
-${skillsSection}
-# History convention:
-- Tool observations from earlier work may appear as one-line receipts like
-  [bash · ok · 78.9KB · full copy: read_output {"id": 42}]. The call and its
-  arguments are intact; only the output body is summarized. If you need the
-  original output, retrieve it with read_output using the referenced id.
-
-# Autonomous Workflow:
-1. Deep Reasoning & Planning:
-   - Before taking complex actions, formulate your step-by-step reasoning inside <think>...</think> tags.
-2. Complete Multi-Step Autonomous Execution:
-   - When the user asks you to solve a problem or build software, execute all necessary tools across multiple turns (e.g. search -> inspect -> write -> run tests -> verify).
-   - If tests or commands fail, analyze the stderr error observation, fix the code, and re-run until passing.
-   - When all implementation and verification are completely finished, output your final comprehensive answer without calling tools.
-3. Direct Inline Link System:
-   - When you create or deliver files (e.g. scripts, HTML documents, code files), embed direct inline markdown links in your response: e.g. [filename.py](filename.py) or [filename.html](filename.html).
-   - The UI automatically renders these as direct 1-click download/open links for the user.
-4. Radical Fluidity:
-   - Call tools directly without unnecessary filler text.
-   - You can execute multiple tools in parallel in a single turn.
-
-# Tools:
-- \`bash\`: Execute bash shell commands, install packages, run scripts, compile binaries, and run tests in the workspace sandbox.
-- \`web_search\`: Search the web in real-time using DuckDuckGo.
-- \`web_fetch\`: Single-page precision fetcher & scraper powered by Scrapling. Supports engine ('http', 'stealth' for Cloudflare/Turnstile bypass, 'dynamic' for JS rendering), selectors (CSS, XPath, Text, Regex), adaptive re-location, screenshots, and formats (markdown, text, html, links, json).
-- \`web_crawl\`: Multi-page spider crawler powered by Scrapling. Crawls websites via sitemap.xml or link following with regex pattern filtering, extracts targeted content, and saves structured results to a file (JSON/CSV).
-- \`read_file\`, \`write_file\`, \`patch_file\`: Inspect, create/overwrite, and surgically patch files in the sandbox.
-- \`python\`: Execute Python 3 code for computation and analysis.
-- \`view_image\`: Look at an image file (user uploads in uploads/ or generated images). When a message carries an attachment marker like [첨부 이미지: uploads/x.png · 240KB], call view_image with that path to actually see it before reasoning about its content.
-- \`load_skill\`: Load an installed skill's full instructions on demand when the task matches its description (see available_skills above).`,
-    };
+    const systemPrompt = buildSystemPrompt({ mode: session.mode, rootDir: sessionRootDir });
 
     const { messages } = buildHistory(enriched, {
       budgetTokens: CONFIG.HISTORY_BUDGET_TOKENS,
       recentFullTools: CONFIG.HISTORY_RECENT_FULL_TOOLS,
       retainThought: CONFIG.THOUGHT_RETENTION,
-      workspaceDir,
+      workspaceDir: sessionRootDir,
     });
 
     return [systemPrompt, ...messages];

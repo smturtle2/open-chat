@@ -13,6 +13,20 @@ import { coordinator } from "./agent/coordinator.js";
 import { sniffImageMime } from "./agent/tools.js";
 import { listSkills, syncBuiltinSkills } from "./agent/skills.js";
 import { tools } from "./agent/tools.js";
+import { chatWorkspaceDir, sessionRoot, sessionMode, uploadsAbsDir, uploadsRelDir } from "./agent/sessionPaths.js";
+import {
+  createProvider,
+  deleteProvider,
+  getSettings,
+  listModelGroups,
+  listProviders,
+  seedBootstrapProvider,
+  testProvider,
+  updateProvider,
+  updateSettings,
+  warmModelCache,
+} from "./agent/providers.js";
+import type { SessionRecord } from "./db/database.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = new Hono();
@@ -25,30 +39,124 @@ app.get("/api/sessions", (c) => {
   return c.json(sessions);
 });
 
-// API: Models from gateway (plus the platform default model)
+// API: Skills
 app.get("/api/skills", (c) => {
   return c.json(listSkills().map(({ name, description }) => ({ name, description })));
 });
 
+// API: Unified model catalog across all enabled providers (grouped).
+// Models come from each gateway's own /models endpoint (TTL-cached).
 app.get("/api/models", async (c) => {
+  const settings = getSettings();
+  const groups = await listModelGroups();
+  // The default is only actionable if its provider actually exposes the model.
+  const defaultUsable = groups.some(
+    (g) => g.provider_id === settings.default_provider && g.models.some((m) => m.id === settings.default_model)
+  );
+  return c.json({
+    groups,
+    default: defaultUsable ? { provider: settings.default_provider, model: settings.default_model } : null,
+  });
+});
+
+// ---- Provider management ----------------------------------------------------
+
+const maskKey = (key: string) => (key ? `…${key.slice(-4)}` : "");
+
+app.get("/api/providers", (c) => {
+  return c.json(
+    listProviders().map((p) => ({
+      id: p.id,
+      name: p.name,
+      base_url: p.base_url,
+      enabled: p.enabled,
+      models: p.models,
+      has_key: !!p.api_key,
+      key_hint: maskKey(p.api_key),
+    }))
+  );
+});
+
+app.post("/api/providers", async (c) => {
   try {
-    const res = await fetch(`${CONFIG.LLM_BASE_URL}/models`, {
-      headers: { Authorization: `Bearer ${CONFIG.LLM_API_KEY}` },
-    });
-    if (!res.ok) return c.json({ data: [], default: CONFIG.LLM_MODEL });
-    const data = await res.json();
-    return c.json({ ...data, default: CONFIG.LLM_MODEL });
-  } catch {
-    return c.json({ data: [], default: CONFIG.LLM_MODEL });
+    const body = await c.req.json().catch(() => ({}));
+    const provider = createProvider(body);
+    if (provider.api_key) warmModelCache(provider.id);
+    return c.json(provider, 201);
+  } catch (err: any) {
+    return c.json({ error: err.message || "Invalid provider" }, 400);
   }
+});
+
+app.patch("/api/providers/:id", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const provider = updateProvider(c.req.param("id"), body);
+    if (!provider) return c.json({ error: "Provider not found" }, 404);
+    if (provider.api_key) warmModelCache(provider.id);
+    return c.json(provider);
+  } catch (err: any) {
+    return c.json({ error: err.message || "Invalid provider" }, 400);
+  }
+});
+
+app.delete("/api/providers/:id", (c) => {
+  if (!deleteProvider(c.req.param("id"))) return c.json({ error: "Provider not found" }, 404);
+  return c.json({ success: true });
+});
+
+app.post("/api/providers/:id/test", async (c) => {
+  return c.json(await testProvider(c.req.param("id")));
+});
+
+// ---- App settings ------------------------------------------------------------
+
+app.get("/api/settings", (c) => c.json(getSettings()));
+
+app.put("/api/settings", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  return c.json(updateSettings(body));
+});
+
+// ---- Working directory validation (agent sessions) ---------------------------
+
+app.get("/api/workdir/validate", (c) => {
+  const raw = (c.req.query("path") || "").trim();
+  if (!raw) return c.json({ ok: false, error: "경로를 입력해 주세요" });
+  let real: string;
+  try {
+    real = fs.realpathSync(path.resolve(raw));
+  } catch {
+    return c.json({ ok: false, error: "존재하지 않는 경로입니다" });
+  }
+  try {
+    if (!fs.statSync(real).isDirectory()) return c.json({ ok: false, error: "디렉토리가 아닙니다" });
+  } catch {
+    return c.json({ ok: false, error: "접근할 수 없는 경로입니다" });
+  }
+  return c.json({ ok: true, real_path: real });
 });
 
 app.post("/api/sessions", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const id = "chat_" + Math.random().toString(36).substring(2, 11);
   const title = body.title || "New Chat";
-  const model = body.model || CONFIG.LLM_MODEL;
-  const session = db.createSession(id, title, model);
+  const model = body.model || getSettings().default_model || CONFIG.LLM_MODEL;
+  const mode = body.mode === "agent" ? "agent" : "chat";
+
+  let workdir: string | null = null;
+  if (mode === "agent") {
+    const raw = typeof body.workdir === "string" ? body.workdir.trim() : "";
+    if (!raw) return c.json({ error: "에이전트 세션에는 작업 디렉토리(workdir)가 필요합니다" }, 400);
+    try {
+      workdir = fs.realpathSync(path.resolve(raw));
+      if (!fs.statSync(workdir).isDirectory()) throw new Error("not a directory");
+    } catch {
+      return c.json({ error: `유효하지 않은 작업 디렉토리: ${raw}` }, 400);
+    }
+  }
+
+  const session = db.createSession(id, title, model, { mode, workdir, provider: body.provider || null });
   return c.json({ ...session, last_event_id: 0 });
 });
 
@@ -74,6 +182,9 @@ app.patch("/api/sessions/:id", async (c) => {
   if (body.model) {
     db.updateSessionModel(id, body.model);
   }
+  if (body.provider !== undefined) {
+    db.updateSessionProvider(id, body.provider || null);
+  }
   const session = db.getSession(id);
   return c.json(session || { success: true });
 });
@@ -86,18 +197,24 @@ app.delete("/api/sessions/:id", (c) => {
   return c.json({ success: true });
 });
 
-// API: Files & Downloads in Sandbox Workspace
+// API: Files & Downloads in the session root (chat workspace or agent workdir)
 app.get("/api/sessions/:id/files", (c) => {
   const id = c.req.param("id");
-  const workspaceDir = path.join(CONFIG.WORKSPACES_ROOT, id);
-  if (!fs.existsSync(workspaceDir)) return c.json({ files: [] });
+  const session = db.getSession(id);
+  const rootDir = session ? sessionRoot(session) : chatWorkspaceDir(id);
+  if (!fs.existsSync(rootDir)) return c.json({ files: [] });
 
   const getFilesRecursive = (dir: string, base: string = ""): Array<{ name: string; path: string; size: number }> => {
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       const results: Array<{ name: string; path: string; size: number }> = [];
       for (const entry of entries) {
-        if (entry.name === ".venv" || entry.name === "__pycache__" || entry.name.startsWith(".")) continue;
+        // Hidden entries are skipped except our own .openchat uploads dir
+        // (agent sessions keep attachments there).
+        if (entry.name.startsWith(".")) {
+          if (!(sessionMode(session!) === "agent" && base === "" && entry.name === ".openchat")) continue;
+        }
+        if (entry.name === ".venv" || entry.name === "__pycache__" || entry.name === "node_modules") continue;
         const rel = base ? `${base}/${entry.name}` : entry.name;
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
@@ -113,7 +230,7 @@ app.get("/api/sessions/:id/files", (c) => {
     }
   };
 
-  return c.json({ files: getFilesRecursive(workspaceDir) });
+  return c.json({ files: getFilesRecursive(rootDir) });
 });
 
 // Full archived tool output (fold view for truncated observations in the UI)
@@ -135,19 +252,20 @@ app.get("/api/sessions/:id/usage", (c) => {
 app.get("/api/sessions/:id/files/:filename{.+}", (c) => {
   const id = c.req.param("id");
   const filename = c.req.param("filename");
-  const workspaceDir = path.join(CONFIG.WORKSPACES_ROOT, id);
+  const session: SessionRecord | undefined = db.getSession(id);
+  const rootDir = session ? sessionRoot(session) : chatWorkspaceDir(id);
 
   // Traversal + symlink-safe containment check: resolve real paths and
-  // require the target to sit strictly inside the session workspace.
+  // require the target to sit strictly inside the session root.
   let fullReal: string;
-  let wsReal: string;
+  let rootReal: string;
   try {
-    fullReal = fs.realpathSync(path.resolve(workspaceDir, filename));
-    wsReal = fs.realpathSync(workspaceDir);
+    fullReal = fs.realpathSync(path.resolve(rootDir, filename));
+    rootReal = fs.realpathSync(rootDir);
   } catch {
     return c.text("File not found", 404);
   }
-  const rel = path.relative(wsReal, fullReal);
+  const rel = path.relative(rootReal, fullReal);
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
     return c.text("File not found", 404);
   }
@@ -180,8 +298,15 @@ app.get("/api/sessions/:id/files/:filename{.+}", (c) => {
   const contentType = mimeTypes[ext] || "application/octet-stream";
   const fileData = fs.readFileSync(fullReal);
 
+  // Header values are ByteString (Latin-1): non-ASCII filenames (한글 etc.)
+  // must ride the RFC 5987 filename* parameter, with an ASCII fallback.
+  const base = path.basename(fullReal);
+  const asciiFallback = base.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'");
   c.header("Content-Type", contentType);
-  c.header("Content-Disposition", `inline; filename="${path.basename(fullReal)}"`);
+  c.header(
+    "Content-Disposition",
+    `inline; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(base)}`
+  );
   return c.body(fileData);
 });
 
@@ -205,7 +330,7 @@ app.post("/api/sessions/:id/attachments", async (c) => {
   const sniffedMime = sniffImageMime(buf);
   const kind: "image" | "file" = sniffedMime ? "image" : "file";
 
-  const uploadsDir = path.join(CONFIG.WORKSPACES_ROOT, id, "uploads");
+  const uploadsDir = uploadsAbsDir(session);
   fs.mkdirSync(uploadsDir, { recursive: true });
 
   const base = file.name.replace(/[^\w.\-\uAC00-\uD7A3]+/g, "_").slice(-80) || "upload";
@@ -223,7 +348,7 @@ app.post("/api/sessions/:id/attachments", async (c) => {
   fs.writeFileSync(absPath, buf);
 
   const attId = "att_" + Math.random().toString(36).substring(2, 11);
-  const relPath = `uploads/${uniqueName}`;
+  const relPath = `${uploadsRelDir(session)}/${uniqueName}`;
   db.createAttachment({
     id: attId,
     session_id: id,
@@ -346,9 +471,10 @@ if (fs.existsSync(clientDist)) {
 // Start HTTP Server
 const port = CONFIG.PORT;
 syncBuiltinSkills();
+seedBootstrapProvider();
 console.log(`[OpenChat] Starting server on http://localhost:${port}`);
-if (!CONFIG.LLM_API_KEY) {
-  console.error("[OpenChat] LLM_API_KEY is not set — chat requests will fail. Configure it in /root/openchat/.env");
+if (!CONFIG.LLM_API_KEY && listProviders().every((p) => !p.api_key)) {
+  console.error("[OpenChat] No provider API key configured — chat requests will fail. Add a provider in Settings.");
 }
 void tools.cleanupAllContainers();
 db.pruneToolOutputs();

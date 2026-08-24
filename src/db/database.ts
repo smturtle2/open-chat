@@ -3,13 +3,37 @@ import fs from "node:fs";
 import path from "node:path";
 import { CONFIG } from "../config.js";
 
+export type SessionMode = "chat" | "agent";
+
 export interface SessionRecord {
   id: string;
   title: string;
   model: string;
+  provider: string | null;
+  mode: SessionMode;
+  workdir: string | null;
   created_at: string;
   updated_at: string;
   status: "idle" | "running";
+}
+
+// ---- Providers (multi-provider LLM endpoints, opencode.json-style) ----
+
+export interface ProviderModel {
+  id: string;
+  name?: string;
+}
+
+export interface ProviderRecord {
+  id: string;
+  name: string;
+  base_url: string;
+  api_key: string;
+  models: ProviderModel[];
+  enabled: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface MessageRecord {
@@ -134,22 +158,66 @@ export class AppDatabase {
       );
 
       CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
+
+      CREATE TABLE IF NOT EXISTS providers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        api_key TEXT NOT NULL DEFAULT '',
+        models TEXT NOT NULL DEFAULT '[]',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
 
-    // Migration: add model column if missing
+    // Migrations: add columns if missing (ad-hoc, ordered)
     const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
-    if (!cols.some((c) => c.name === "model")) {
+    const has = (name: string) => cols.some((c) => c.name === name);
+    if (!has("model")) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT 'muse-spark-1.2-contributor'`);
+    }
+    if (!has("provider")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN provider TEXT`);
+    }
+    if (!has("mode")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'chat'`);
+    }
+    if (!has("workdir")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN workdir TEXT`);
     }
   }
 
   // Session Operations
-  createSession(id: string, title: string = "New Chat", model: string = CONFIG.LLM_MODEL): SessionRecord {
+  createSession(
+    id: string,
+    title: string = "New Chat",
+    model: string = CONFIG.LLM_MODEL,
+    opts: { mode?: SessionMode; workdir?: string | null; provider?: string | null } = {}
+  ): SessionRecord {
     const now = new Date().toISOString();
     this.db
-      .prepare("INSERT INTO sessions (id, title, model, status, created_at, updated_at) VALUES (?, ?, ?, 'idle', ?, ?)")
-      .run(id, title, model, now, now);
-    return { id, title, model, status: "idle", created_at: now, updated_at: now };
+      .prepare(
+        "INSERT INTO sessions (id, title, model, provider, mode, workdir, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?)"
+      )
+      .run(id, title, model, opts.provider ?? null, opts.mode ?? "chat", opts.workdir ?? null, now, now);
+    return {
+      id,
+      title,
+      model,
+      provider: opts.provider ?? null,
+      mode: opts.mode ?? "chat",
+      workdir: opts.workdir ?? null,
+      status: "idle",
+      created_at: now,
+      updated_at: now,
+    };
   }
 
   getSession(id: string): SessionRecord | undefined {
@@ -168,6 +236,11 @@ export class AppDatabase {
   updateSessionModel(id: string, model: string) {
     const now = new Date().toISOString();
     this.db.prepare("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?").run(model, now, id);
+  }
+
+  updateSessionProvider(id: string, provider: string | null) {
+    const now = new Date().toISOString();
+    this.db.prepare("UPDATE sessions SET provider = ?, updated_at = ? WHERE id = ?").run(provider, now, id);
   }
 
   updateSessionStatus(id: string, status: SessionRecord["status"]) {
@@ -345,6 +418,63 @@ export class AppDatabase {
       { calls: 0, raw_chars: 0, visible_chars: 0 }
     );
     return { totals, breakdown: rows };
+  }
+  // Provider Operations
+  private parseProvider(row: any): ProviderRecord {
+    let models: ProviderModel[] = [];
+    try {
+      const parsed = JSON.parse(row.models);
+      if (Array.isArray(parsed)) {
+        models = parsed
+          .filter((m: any) => m && typeof m.id === "string")
+          .map((m: any) => ({ id: m.id, ...(typeof m.name === "string" ? { name: m.name } : {}) }));
+      }
+    } catch {}
+    return { ...row, models, enabled: !!row.enabled };
+  }
+
+  listProviders(): ProviderRecord[] {
+    const rows = this.db.prepare("SELECT * FROM providers ORDER BY sort_order ASC, created_at ASC").all() as any[];
+    return rows.map((r) => this.parseProvider(r));
+  }
+
+  getProvider(id: string): ProviderRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM providers WHERE id = ?").get(id) as any;
+    return row ? this.parseProvider(row) : undefined;
+  }
+
+  upsertProvider(p: Omit<ProviderRecord, "created_at" | "updated_at">): ProviderRecord {
+    const now = new Date().toISOString();
+    const existing = this.getProvider(p.id);
+    const created = existing?.created_at ?? now;
+    this.db
+      .prepare(
+        `INSERT INTO providers (id, name, base_url, api_key, models, enabled, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name, base_url = excluded.base_url, api_key = excluded.api_key,
+           models = excluded.models, enabled = excluded.enabled,
+           sort_order = CASE WHEN excluded.sort_order = 0 THEN providers.sort_order ELSE excluded.sort_order END,
+           updated_at = excluded.updated_at`
+      )
+      .run(p.id, p.name, p.base_url, p.api_key, JSON.stringify(p.models), p.enabled ? 1 : 0, p.sort_order || (existing?.sort_order ?? 0), created, now);
+    return this.getProvider(p.id)!;
+  }
+
+  deleteProvider(id: string): void {
+    this.db.prepare("DELETE FROM providers WHERE id = ?").run(id);
+  }
+
+  // Settings kv — small app-level preferences (default provider/model).
+  getSetting(key: string): string | null {
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setSetting(key: string, value: string): void {
+    this.db
+      .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(key, value);
   }
 }
 

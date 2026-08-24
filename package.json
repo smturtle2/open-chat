@@ -6,8 +6,8 @@
     "start": "node --import=tsx src/index.ts",
     "build": "cd client && npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npx tsx tests/test_context.ts && node tests/test_step_sheet.js && node tests/test_working_indicator.js",
-    "test:unit": "npx tsx tests/test_context.ts",
+    "test": "npx tsx tests/test_units.ts && npx tsx tests/test_context.ts && node tests/test_step_sheet.js && node tests/test_working_indicator.js",
+    "test:unit": "npx tsx tests/test_units.ts && npx tsx tests/test_context.ts",
     "test:e2e": "node tests/test_step_sheet.js && node tests/test_working_indicator.js"
   },
   "dependencies": {
