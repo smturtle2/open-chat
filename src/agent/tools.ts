@@ -300,7 +300,7 @@ export class ToolRegistry {
           parameters: {
             type: "object",
             properties: {
-              path: { type: "string", description: "File path relative to the workspace root." },
+              path: { type: "string", description: "File path — relative to the workspace root (recommended) or absolute inside the sandbox (e.g. /opt/skills/<skill>/assets/tpl.html)." },
               offset: { type: "number", description: "Optional 1-based line number to start reading from (for paging through large files)." },
               limit: { type: "number", description: "Optional maximum number of lines to read." },
             },
@@ -312,11 +312,11 @@ export class ToolRegistry {
         type: "function",
         function: {
           name: "view_image",
-          description: "View an image file from the session workspace (user uploads or generated images). Returns the image visually so you can see its pixels. Use when a task involves screenshots, photos, diagrams, or design references. Supported: PNG, JPEG, GIF, WebP up to 5MB.",
+          description: "View an image file from the session workspace (uploads, generated images) or from /opt/skills. Returns the image visually so you can see its pixels. Use when a task involves screenshots, photos, diagrams, or design references. Supported: PNG, JPEG, GIF, WebP up to 5MB.",
           parameters: {
             type: "object",
             properties: {
-              path: { type: "string", description: "Image path relative to the workspace root (e.g. uploads/screenshot.png)." },
+              path: { type: "string", description: "Image path — relative to the workspace root (e.g. uploads/screenshot.png) or under /opt/skills/... ." },
             },
             required: ["path"],
           },
@@ -330,7 +330,7 @@ export class ToolRegistry {
           parameters: {
             type: "object",
             properties: {
-              path: { type: "string", description: "File path relative to the workspace root." },
+              path: { type: "string", description: "File path — relative to the workspace root (recommended) or absolute inside the sandbox (e.g. /opt/skills/<skill>/assets/tpl.html)." },
               content: { type: "string", description: "Full content to write to the file." },
             },
             required: ["path", "content"],
@@ -345,7 +345,7 @@ export class ToolRegistry {
           parameters: {
             type: "object",
             properties: {
-              path: { type: "string", description: "File path relative to the workspace root." },
+              path: { type: "string", description: "File path — relative to the workspace root (recommended) or absolute inside the sandbox (e.g. /opt/skills/<skill>/assets/tpl.html)." },
               target: { type: "string", description: "The exact existing string/block of code to replace." },
               replacement: { type: "string", description: "The new replacement string/block of code." },
             },
@@ -687,27 +687,41 @@ export class ToolRegistry {
     return r.out.trim();
   }
 
-  // Host-side image reader for vision input. The workspace volume is mounted
-  // into the sandbox, so uploads written by the server are visible here by
-  // the same relative path. Containment is enforced host-side (realpath) and
-  // the image type is detected from magic bytes, not the extension.
+  // Host-side image reader for vision input. Two roots are reachable: the
+  // session workspace (default for relative paths) and the shared skills
+  // volume via its container path (/opt/skills/... → SKILLS_DIR). Other
+  // absolute paths are refused — this call reads from the HOST filesystem,
+  // so unlike in-container tools it must stay pinned to those two roots.
   private static readonly IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 
-  private async viewImage(sessionId: string, workspaceDir: string, relPath: string): Promise<ToolObservation | string> {
-    const clean = relPath.replace(/^\/+/, "");
-    if (!clean) return "Error: an image path relative to the workspace root is required";
+  private static readonly SKILLS_MOUNT = "/opt/skills";
+
+  private async viewImage(sessionId: string, workspaceDir: string, imgPath: string): Promise<ToolObservation | string> {
+    const raw = (imgPath || "").trim();
+    if (!raw) return "Error: an image path is required";
 
     let fullReal: string;
     let wsReal: string;
+    let displayPath: string;
     try {
-      fullReal = fs.realpathSync(path.resolve(workspaceDir, clean));
-      wsReal = fs.realpathSync(workspaceDir);
+      if (raw === ToolRegistry.SKILLS_MOUNT || raw.startsWith(ToolRegistry.SKILLS_MOUNT + "/")) {
+        fullReal = fs.realpathSync(path.join(CONFIG.SKILLS_DIR, raw.slice(ToolRegistry.SKILLS_MOUNT.length)));
+        wsReal = fullReal;
+        displayPath = raw;
+      } else if (raw.startsWith("/")) {
+        return `Error: absolute image paths outside ${ToolRegistry.SKILLS_MOUNT} are not readable — copy the file into the workspace first`;
+      } else {
+        fullReal = fs.realpathSync(path.resolve(workspaceDir, raw));
+        wsReal = fs.realpathSync(workspaceDir);
+        displayPath = raw.replace(/^\/+/, "");
+      }
     } catch {
-      return `Error: image not found at ${clean}`;
+      return `Error: image not found at ${raw}`;
     }
     const rel = path.relative(wsReal, fullReal);
-    if (rel.startsWith("..") || path.isAbsolute(rel)) return `Error: image path escapes the workspace`;
-    if (!fs.existsSync(fullReal) || !fs.statSync(fullReal).isFile()) return `Error: image not found at ${clean}`;
+    const rootName = raw.startsWith(ToolRegistry.SKILLS_MOUNT) ? "the skills root" : "the workspace";
+    if (rel.startsWith("..") || path.isAbsolute(rel)) return `Error: image path escapes ${rootName}`;
+    if (!fs.existsSync(fullReal) || !fs.statSync(fullReal).isFile()) return `Error: image not found at ${displayPath}`;
 
     const size = fs.statSync(fullReal).size;
     if (size > ToolRegistry.IMAGE_MAX_BYTES) {
@@ -716,11 +730,11 @@ export class ToolRegistry {
 
     const buf = fs.readFileSync(fullReal);
     const mime = sniffImageMime(buf);
-    if (!mime) return `Error: ${clean} is not a decodable image (PNG/JPEG/GIF/WebP). If it is an image in another format, convert it first.`;
+    if (!mime) return `Error: ${displayPath} is not a decodable image (PNG/JPEG/GIF/WebP). If it is an image in another format, convert it first.`;
 
     db.recordToolUsage(sessionId, "view_image", buf.length, buf.length);
     const kb = size >= 1024 ? `${(size / 1024).toFixed(0)}KB` : `${size}B`;
-    return { text: `${clean} · ${kb}`, kind: "image", path: clean };
+    return { text: `${displayPath} · ${kb}`, kind: "image", path: displayPath };
   }
 
   private async runPython(code: string, sessionId: string, workspaceDir: string, signal?: AbortSignal): Promise<string> {

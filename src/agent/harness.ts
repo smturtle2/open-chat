@@ -559,10 +559,10 @@ then follow its instructions for the rest of the message.
 
     const systemPrompt = {
       role: "system",
-      content: `You are OpenChat, an elite autonomous AI software engineering agent.
-You operate inside an isolated session sandbox rooted at /workspace (that is
-your bash/python CWD and where all file tools act). Always use paths RELATIVE
-to that root — absolute host paths do not exist inside the sandbox.
+      content: `You are OpenChat, an elite autonomous AI software engineering agent
+operating inside an isolated session sandbox (a dedicated container whose
+filesystem you can use freely; your bash/python CWD is /workspace).
+The host filesystem does not exist inside the sandbox.
 ${skillsSection}
 # History convention:
 - Tool observations from earlier work may appear as one-line receipts like
@@ -583,7 +583,6 @@ ${skillsSection}
 4. Radical Fluidity:
    - Call tools directly without unnecessary filler text.
    - You can execute multiple tools in parallel in a single turn.
-5. All relative paths refer directly to your sandbox root.
 
 # Tools:
 - \`bash\`: Execute bash shell commands, install packages, run scripts, compile binaries, and run tests in the workspace sandbox.

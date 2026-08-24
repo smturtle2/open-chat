@@ -3,24 +3,27 @@ import json
 import os
 
 
-def _resolve(rel):
-    """Map a tool 'path' onto the sandbox workspace.
+def _resolve(p):
+    """Map a tool 'path' onto the sandbox filesystem.
 
-    Tool paths are RELATIVE by contract. os.path.join would silently accept
-    absolute targets ('/opt/skills', '/etc/...') and let file tools act on the
-    shared skills volume or anywhere else in the container — enforce strict
-    containment instead.
+    The container IS the security boundary — the host filesystem is not
+    visible from inside, so file tools may act anywhere within the sandbox
+    (bash/python always could). Relative paths resolve against /workspace,
+    the session root; absolute paths are used verbatim ('/opt/skills/...');
+    '~' expands to the container home.
     """
-    if not isinstance(rel, str) or not rel.strip():
-        raise ValueError("a non-empty path relative to the workspace root is required")
-    if os.path.isabs(rel) or rel.startswith("~"):
-        raise ValueError(f"path must be RELATIVE to the workspace root, got '{rel}'")
-    p = os.path.normpath(os.path.join("/workspace", rel))
-    ws = os.path.realpath("/workspace")
-    rp = os.path.realpath(p)
-    if rp != ws and not rp.startswith(ws + os.sep):
-        raise ValueError(f"path escapes the workspace: '{rel}'")
-    return p
+    if not isinstance(p, str) or not p.strip():
+        raise ValueError("a non-empty path is required")
+    p = os.path.expanduser(p)
+    if not os.path.isabs(p):
+        p = os.path.join("/workspace", p)
+    return os.path.normpath(p)
+
+
+def _display(p):
+    """Show workspace paths relatively; anything else verbatim."""
+    rel = os.path.relpath(p, "/workspace")
+    return p if rel.startswith("..") else rel
 
 
 def main():
@@ -36,7 +39,7 @@ def main():
     except ValueError as e:
         print(f"Error: {e}")
         return
-    rel = os.path.relpath(p, "/workspace")
+    rel = _display(p)
 
     try:
         if op == "read":

@@ -8,3 +8,4 @@ openchat.db-shm
 *.log
 /tmp/
 /screenshot*.png
+__pycache__/

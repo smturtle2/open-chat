@@ -22,6 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseObservation } from "./tools.js";
+import { CONFIG } from "../config.js";
 
 export type HistoryRecord = {
   id?: string;
@@ -292,13 +293,21 @@ export function buildHistory(
       const obs = typeof r.content === "string" ? parseObservation(r.content) : null;
       const msg: BuiltMessage = { role: "tool", tool_call_id: r.tool_call_id ?? "", name: r.name ?? undefined };
       if (obs && workspaceDir) {
-        // Re-hydrate the image from disk right before the call. If the file
-        // has vanished, degrade to a plain-text note instead of failing.
+        // Re-hydrate the image from disk right before the call. Two roots are
+        // valid: the session workspace (relative paths) and the shared skills
+        // volume via its container path (/opt/skills/...). If the file has
+        // vanished, degrade to a plain-text note instead of failing.
         try {
-          const absReal = fs.realpathSync(path.resolve(workspaceDir, obs.path ?? ""));
-          const wsReal = fs.realpathSync(workspaceDir);
-          const relCheck = path.relative(wsReal, absReal);
-          if (relCheck.startsWith("..") || path.isAbsolute(relCheck)) throw new Error("escapes workspace");
+          const skillsMount = "/opt/skills";
+          const absRaw = obs.path?.startsWith(skillsMount)
+            ? path.join(CONFIG.SKILLS_DIR, obs.path.slice(skillsMount.length))
+            : path.resolve(workspaceDir, obs.path ?? "");
+          const absReal = fs.realpathSync(absRaw);
+          const rootReal = fs.realpathSync(
+            obs.path?.startsWith(skillsMount) ? CONFIG.SKILLS_DIR : workspaceDir
+          );
+          const relCheck = path.relative(rootReal, absReal);
+          if (relCheck.startsWith("..") || path.isAbsolute(relCheck)) throw new Error("escapes root");
           const mime = IMAGE_MIME_BY_EXT[path.extname(absReal).toLowerCase()];
           if (!mime) throw new Error("unsupported image type");
           const buf = fs.readFileSync(absReal);
