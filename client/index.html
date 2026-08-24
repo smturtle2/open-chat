@@ -1,9 +1,20 @@
 <!DOCTYPE html>
-<html lang="ko" class="light">
+<html lang="ko">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>OpenChat</title>
+    <script>
+      // Theme boot: apply the stored preference before first paint (FOUC
+      // fix). Mirrors client/src/theme.ts — keep in sync.
+      (() => {
+        try {
+          var t = localStorage.getItem("openchat_theme") || "system";
+          var dark = t === "dark" || (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+        } catch (e) {}
+      })();
+    </script>
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#ffffff" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -16,7 +27,7 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css" />
   </head>
-  <body class="bg-white text-zinc-900 font-sans antialiased overflow-hidden select-text m-0 p-0 w-full h-full">
+  <body class="bg-white dark:bg-[#121212] text-zinc-900 dark:text-zinc-100 font-sans antialiased overflow-hidden select-text m-0 p-0 w-full h-full">
     <div id="root" class="w-full h-full"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

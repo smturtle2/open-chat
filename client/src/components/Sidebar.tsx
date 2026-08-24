@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Plus, Trash2, Edit3, Check, X, PanelLeftClose, Sun, Moon } from "lucide-react";
-import { useChatStore } from "../store/useChatStore";
+import { Bot, MessageCircle, PanelLeftClose, Plus, Trash2, Edit3, Settings, X } from "lucide-react";
+import { useChatStore, type Session } from "../store/useChatStore";
+import { BottomSheet } from "./BottomSheet";
+import { SettingsSheet } from "./SettingsSheet";
 
 const W = 240; // drawer width (px)
 const SLOP = 10; // px before the axis locks (vaul-style)
@@ -11,8 +13,6 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 
 export const Sidebar: React.FC = () => {
   const {
-    theme,
-    toggleTheme,
     sessions,
     currentSessionId,
     sidebarOpen,
@@ -27,6 +27,8 @@ export const Sidebar: React.FC = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [revealId, setRevealId] = useState<string | null>(null);
+  const [agentDialogOpen, setAgentDialogOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const asideRef = useRef<HTMLElement | null>(null);
   const backdropRef = useRef<HTMLDivElement | null>(null);
@@ -309,6 +311,99 @@ export const Sidebar: React.FC = () => {
     setRevealId(null);
   };
 
+  const renderRow = (s: Session, icon?: React.ReactNode) => {
+    const isSelected = s.id === currentSessionId;
+    const isEditing = editingId === s.id;
+    const revealed = revealId === s.id;
+
+    return (
+      <div key={s.id} data-row={s.id} className="relative rounded-lg overflow-hidden group">
+        {/* Action layer underneath */}
+        <div
+          className={`absolute inset-y-0 right-0 flex items-center gap-1 pl-10 pr-2.5 rounded-lg ${
+            isSelected ? "bg-zinc-200 dark:bg-zinc-800" : "bg-[#f9f9fb] dark:bg-[#141416]"
+          } ${revealed ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+        >
+          {!isEditing && (
+            <>
+              <button
+                onClick={(e) => handleStartRename(s.id, s.title, e)}
+                className="p-1.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={(e) => handleDelete(s.id, e)}
+                className="p-1.5 text-zinc-400 hover:text-rose-500"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* Sliding row content */}
+        <div
+          data-row-content
+          onClick={() => {
+            if (suppressClick.current) return;
+            selectSession(s.id);
+            setRevealId(null);
+            if (window.innerWidth < 768) setSidebarOpen(false);
+          }}
+          style={{
+            transition: ROW_EASE,
+            transform: `translateX(${revealed ? -REVEAL_X : 0}px)`,
+          }}
+          className={`relative flex items-center justify-between px-3 py-2 rounded-lg text-[13px] cursor-pointer select-none ${
+            isSelected
+              ? "bg-zinc-200/80 dark:bg-zinc-800 text-zinc-950 dark:text-zinc-100 font-medium"
+              : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/40 dark:hover:bg-zinc-800/50 hover:text-zinc-900 dark:hover:text-zinc-200"
+          }`}
+        >
+          <div className="truncate flex-1 mr-1 flex items-center gap-1.5">
+            {icon}
+            {isEditing ? (
+              <input
+                type="text"
+                value={editingTitle}
+                onChange={(e) => setEditingTitle(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSaveRename(s.id, e as any);
+                  if (e.key === "Escape") setEditingId(null);
+                }}
+                autoFocus
+                className="w-full bg-white dark:bg-zinc-900 border border-zinc-400 rounded px-1.5 py-0.5 text-xs outline-none"
+              />
+            ) : (
+              <span className="truncate">{s.title}</span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const sectionHeader = (label: string, count: number, onCreate: () => void) => (
+    <div className="flex items-center justify-between pl-2 pr-1 pt-3 pb-1">
+      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 flex items-center gap-1.5">
+        {label}
+        {count > 0 && <span className="font-mono font-normal text-zinc-300 dark:text-zinc-600">{count}</span>}
+      </span>
+      <button
+        onClick={onCreate}
+        title={`${label} 새로 만들기`}
+        className="p-1 rounded text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+      >
+        <Plus className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+
+  const agentSessions = sessions.filter((s) => s.mode === "agent");
+  const chatSessions = sessions.filter((s) => s.mode !== "agent");
+
   const shortModel = selectedModel.length > 24 ? selectedModel.slice(0, 24) + "…" : selectedModel;
 
   return (
@@ -332,7 +427,7 @@ export const Sidebar: React.FC = () => {
         }`}
       >
         {/* Top Header */}
-        <div className="p-3 space-y-2.5 flex-shrink-0">
+        <div className="p-3 pb-1 flex-shrink-0">
           <div className="flex items-center justify-between px-1">
             <span className="font-semibold text-sm text-zinc-900 dark:text-zinc-100 tracking-tight">
               OpenChat
@@ -344,111 +439,152 @@ export const Sidebar: React.FC = () => {
               <PanelLeftClose className="w-3.5 h-3.5" />
             </button>
           </div>
-
-          <button
-            onClick={() => {
-              createSession();
-              setRevealId(null);
-              if (window.innerWidth < 768) setSidebarOpen(false);
-            }}
-            className="w-full flex items-center justify-between px-3 py-2 bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-100 dark:hover:bg-white dark:text-zinc-900 rounded-lg text-xs font-medium transition-all cursor-pointer"
-          >
-            <div className="flex items-center gap-1.5">
-              <Plus className="w-3.5 h-3.5" />
-              <span>New chat</span>
-            </div>
-            <kbd className="text-[9px] font-mono opacity-70">⌘K</kbd>
-          </button>
         </div>
 
-        {/* Chat List */}
+        {/* Session lists — agent section first, chat below */}
         <div className="flex-1 min-h-0 overflow-y-auto px-2 space-y-0.5" style={{ touchAction: "pan-y" }}>
-          {sessions.map((s) => {
-            const isSelected = s.id === currentSessionId;
-            const isEditing = editingId === s.id;
-            const revealed = revealId === s.id;
+          {sectionHeader("에이전트", agentSessions.length, () => setAgentDialogOpen(true))}
+          {agentSessions.map((s) => renderRow(s, <Bot className="w-3.5 h-3.5 flex-shrink-0 text-violet-500 dark:text-violet-400" />))}
 
-            return (
-              <div key={s.id} data-row={s.id} className="relative rounded-lg overflow-hidden group">
-                {/* Action layer underneath */}
-                <div
-                  className={`absolute inset-y-0 right-0 flex items-center gap-1 pl-10 pr-2.5 rounded-lg ${
-                    isSelected ? "bg-zinc-200 dark:bg-zinc-800" : "bg-[#f9f9fb] dark:bg-[#141416]"
-                  } ${revealed ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
-                >
-                  {!isEditing && (
-                    <>
-                      <button
-                        onClick={(e) => handleStartRename(s.id, s.title, e)}
-                        className="p-1.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={(e) => handleDelete(s.id, e)}
-                        className="p-1.5 text-zinc-400 hover:text-rose-500"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </>
-                  )}
-                </div>
-
-                {/* Sliding row content */}
-                <div
-                  data-row-content
-                  onClick={() => {
-                    if (suppressClick.current) return;
-                    selectSession(s.id);
-                    setRevealId(null);
-                    if (window.innerWidth < 768) setSidebarOpen(false);
-                  }}
-                  style={{
-                    transition: ROW_EASE,
-                    transform: `translateX(${revealed ? -REVEAL_X : 0}px)`,
-                  }}
-                  className={`relative flex items-center justify-between px-3 py-2 rounded-lg text-[13px] cursor-pointer select-none ${
-                    isSelected
-                      ? "bg-zinc-200/80 dark:bg-zinc-800 text-zinc-950 dark:text-zinc-100 font-medium"
-                      : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/40 dark:hover:bg-zinc-800/50 hover:text-zinc-900 dark:hover:text-zinc-200"
-                  }`}
-                >
-                  <div className="truncate flex-1 mr-1">
-                    {isEditing ? (
-                      <input
-                        type="text"
-                        value={editingTitle}
-                        onChange={(e) => setEditingTitle(e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleSaveRename(s.id, e as any);
-                          if (e.key === "Escape") setEditingId(null);
-                        }}
-                        autoFocus
-                        className="w-full bg-white dark:bg-zinc-900 border border-zinc-400 rounded px-1.5 py-0.5 text-xs outline-none"
-                      />
-                    ) : (
-                      <span className="truncate">{s.title}</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+          {sectionHeader("채팅", chatSessions.length, () => createSession("chat"))}
+          {chatSessions.map((s) => renderRow(s, <MessageCircle className="w-3.5 h-3.5 flex-shrink-0 text-zinc-300 dark:text-zinc-600" />))}
         </div>
 
         {/* Footer */}
         <div className="p-2.5 border-t border-zinc-200/70 dark:border-zinc-800 flex items-center justify-between text-[11px] text-zinc-400 flex-shrink-0">
           <span className="font-mono truncate" title={selectedModel}>{shortModel}</span>
           <button
-            onClick={toggleTheme}
-            className="p-1 rounded hover:bg-zinc-200/60 dark:hover:bg-zinc-800 text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 transition-colors cursor-pointer"
-            title={theme === "light" ? "Dark mode" : "Light mode"}
+            onClick={() => setSettingsOpen(true)}
+            data-settings-trigger
+            title="설정"
+            className="p-1.5 -mr-1 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
           >
-            {theme === "light" ? <Moon className="w-3.5 h-3.5" /> : <Sun className="w-3.5 h-3.5" />}
+            <Settings className="w-3.5 h-3.5" />
           </button>
         </div>
       </aside>
+
+      {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
+
+      {/* New-agent working directory dialog */}
+      {agentDialogOpen && (
+        <NewAgentSheet
+          onClose={() => setAgentDialogOpen(false)}
+          onCreate={async (workdir) => {
+            const id = await createSession("agent", workdir);
+            if (id) {
+              setAgentDialogOpen(false);
+              if (window.innerWidth < 768) setSidebarOpen(false);
+            }
+          }}
+        />
+      )}
     </>
+  );
+};
+
+// ------------------------------------------------------------- new-agent sheet
+
+interface ValidateResult {
+  ok: boolean;
+  real_path?: string;
+  error?: string;
+}
+
+const NewAgentSheet: React.FC<{ onClose: () => void; onCreate: (workdir: string) => void }> = ({ onClose, onCreate }) => {
+  const [path, setPath] = useState("");
+  const [validation, setValidation] = useState<ValidateResult | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const trimmed = path.trim();
+    if (!trimmed) {
+      setValidation(null);
+      return;
+    }
+    setChecking(true);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/workdir/validate?path=${encodeURIComponent(trimmed)}`);
+        setValidation(await res.json());
+      } catch {
+        setValidation({ ok: false, error: "검증 실패" });
+      } finally {
+        setChecking(false);
+      }
+    }, 350);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [path]);
+
+  const canCreate = validation?.ok && !creating;
+  const inputCls =
+    "w-full bg-zinc-50 dark:bg-zinc-900 text-sm text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 px-3 py-2.5 rounded-xl border outline-none focus:border-zinc-400 dark:focus:border-zinc-500 font-mono text-xs";
+
+  return (
+    <BottomSheet onClose={onClose}>
+      <div className="pb-5 px-5" data-new-agent-sheet>
+        <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">새 에이전트</h2>
+        <p className="pt-1 pb-3 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+          에이전트는 지정한 디렉토리에서 <span className="font-medium text-zinc-700 dark:text-zinc-200">호스트에서 직접</span> 실행됩니다
+          (샌드박스 없음). 신뢰하는 프로젝트 디렉토리만 지정하세요.
+        </p>
+
+        <input
+          autoFocus
+          value={path}
+          onChange={(e) => setPath(e.target.value)}
+          placeholder="/home/user/my-project"
+          spellCheck={false}
+          autoComplete="off"
+          className={`${inputCls} ${
+            !validation || checking
+              ? "border-zinc-200 dark:border-zinc-700"
+              : validation.ok
+                ? "border-emerald-500/60"
+                : "border-rose-400/70"
+          }`}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && canCreate) {
+              setCreating(true);
+              onCreate(validation!.real_path!);
+            }
+          }}
+        />
+
+        <div className="min-h-[18px] pt-1.5 text-[11px]">
+          {checking && <span className="text-zinc-400">확인 중…</span>}
+          {!checking && validation?.ok && (
+            <span className="text-emerald-600 dark:text-emerald-400">✓ {validation.real_path}</span>
+          )}
+          {!checking && validation && !validation.ok && (
+            <span className="text-rose-500">{validation.error}</span>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-xl text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+          >
+            취소
+          </button>
+          <button
+            disabled={!canCreate}
+            onClick={() => {
+              setCreating(true);
+              onCreate(validation!.real_path!);
+            }}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-sm font-medium hover:opacity-85 transition-opacity cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {creating ? "생성 중…" : "에이전트 시작"}
+          </button>
+        </div>
+      </div>
+    </BottomSheet>
   );
 };

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { ArrowUp, Square, ChevronUp, Check, Paperclip, X } from "lucide-react";
-import { useChatStore } from "../store/useChatStore";
+import { useChatStore, type ModelGroup } from "../store/useChatStore";
 import { BottomSheet } from "./BottomSheet";
 
 export const PromptInput: React.FC = () => {
@@ -8,7 +8,19 @@ export const PromptInput: React.FC = () => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const currentSessionId = useChatStore((st) => st.currentSessionId);
-  const { isGenerating, sendMessage, stopGeneration, models, selectedModel, setSelectedModel, pendingAttachments, uploading, addFiles, removePendingAttachment } = useChatStore();
+  const {
+    isGenerating,
+    sendMessage,
+    stopGeneration,
+    modelGroups,
+    selectedModel,
+    selectedProvider,
+    setSelectedModel,
+    pendingAttachments,
+    uploading,
+    addFiles,
+    removePendingAttachment,
+  } = useChatStore();
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelFilter, setModelFilter] = useState("");
   const filterRef = useRef<HTMLInputElement>(null);
@@ -130,18 +142,29 @@ export const PromptInput: React.FC = () => {
     }
   };
 
-  const handleSelectModel = (modelId: string) => {
-    setSelectedModel(modelId);
+  const handleSelectModel = (modelId: string, providerId: string) => {
+    setSelectedModel(modelId, providerId);
     closeModelMenu();
   };
 
   const hasText = content.trim().length > 0;
   const hasAttachments = pendingAttachments.length > 0;
 
-  // Filtered models
-  const filteredModels = modelFilter.trim()
-    ? models.filter((m) => m.id.toLowerCase().includes(modelFilter.toLowerCase()))
-    : models;
+  // Unified picker: groups preserved for display; filtering flattens.
+  const filteredGroups: ModelGroup[] = modelFilter.trim()
+    ? modelGroups
+        .map((g) => ({
+          ...g,
+          models: g.models.filter(
+            (m) =>
+              m.id.toLowerCase().includes(modelFilter.toLowerCase()) ||
+              (m.name || "").toLowerCase().includes(modelFilter.toLowerCase()) ||
+              g.provider_name.toLowerCase().includes(modelFilter.toLowerCase())
+          ),
+        }))
+        .filter((g) => g.models.length > 0)
+    : modelGroups;
+  const totalFiltered = filteredGroups.reduce((n, g) => n + g.models.length, 0);
 
   // Short display name
   const displayModel = selectedModel.length > 28 ? selectedModel.slice(0, 28) + "…" : selectedModel;
@@ -276,34 +299,49 @@ export const PromptInput: React.FC = () => {
                 placeholder="Search models..."
                 className="w-full bg-zinc-50 dark:bg-zinc-900 text-sm text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-700 outline-none focus:border-zinc-400 dark:focus:border-zinc-500 font-mono"
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && filteredModels.length > 0) {
-                    handleSelectModel(filteredModels[0].id);
+                  if (e.key === "Enter" && totalFiltered > 0) {
+                    const g = filteredGroups[0];
+                    handleSelectModel(g.models[0].id, g.provider_id);
                   }
                 }}
               />
             </div>
 
             <div className="max-h-[52vh] overflow-y-auto border-t border-zinc-100 dark:border-zinc-800 py-1.5 px-1.5">
-              {filteredModels.length === 0 ? (
-                <div className="px-3 py-3 text-sm text-zinc-400 text-center">No models found</div>
+              {totalFiltered === 0 ? (
+                <div className="px-3 py-3 text-sm text-zinc-400 text-center">
+                  {modelGroups.length === 0 ? "프로바이더를 먼저 설정해 주세요" : "No models found"}
+                </div>
               ) : (
-                filteredModels.map((m) => {
-                  const isActive = m.id === selectedModel;
-                  return (
-                    <button
-                      key={m.id}
-                      onClick={() => handleSelectModel(m.id)}
-                      className={`w-full flex items-center justify-between px-3 py-2.5 text-sm font-mono text-left rounded-xl transition-colors cursor-pointer ${
-                        isActive
-                          ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium"
-                          : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/60 hover:text-zinc-900 dark:hover:text-zinc-200"
-                      }`}
-                    >
-                      <span className="truncate">{m.id}</span>
-                      {isActive && <Check className="w-4 h-4 text-zinc-500 flex-shrink-0 ml-2" />}
-                    </button>
-                  );
-                })
+                filteredGroups.map((g) => (
+                  <div key={g.provider_id} className="mb-1">
+                    <div className="px-3 pt-2 pb-1 text-[10.5px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+                      {g.provider_name}
+                    </div>
+                    {g.models.map((m) => {
+                      const isActive = m.id === selectedModel && g.provider_id === selectedProvider;
+                      return (
+                        <button
+                          key={`${g.provider_id}:${m.id}`}
+                          onClick={() => handleSelectModel(m.id, g.provider_id)}
+                          className={`w-full flex items-center justify-between px-3 py-2.5 text-sm font-mono text-left rounded-xl transition-colors cursor-pointer ${
+                            isActive
+                              ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium"
+                              : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/60 hover:text-zinc-900 dark:hover:text-zinc-200"
+                          }`}
+                        >
+                          <span className="truncate">
+                            {m.id}
+                            {m.name && m.name !== m.id && (
+                              <span className="ml-2 font-sans text-[11px] text-zinc-400">{m.name}</span>
+                            )}
+                          </span>
+                          {isActive && <Check className="w-4 h-4 text-zinc-500 flex-shrink-0 ml-2" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))
               )}
             </div>
           </div>

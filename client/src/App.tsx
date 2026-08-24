@@ -1,16 +1,19 @@
 import React, { useEffect } from "react";
-import { PanelLeft, Sun, Moon } from "lucide-react";
+import { PanelLeft } from "lucide-react";
 import { useChatStore } from "./store/useChatStore";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { PromptInput } from "./components/PromptInput";
+import { SessionMenu } from "./components/SessionMenu";
+import { initTheme } from "./theme";
 
 export const App: React.FC = () => {
-  const { theme, toggleTheme, fetchSessions, fetchModels, sidebarOpen, setSidebarOpen } = useChatStore();
+  const { fetchSessions, fetchModels, sidebarOpen, setSidebarOpen } = useChatStore();
 
   useEffect(() => {
     fetchSessions();
     fetchModels();
+    return initTheme();
   }, []);
 
   return (
@@ -32,13 +35,7 @@ export const App: React.FC = () => {
             <span className="font-semibold text-sm text-zinc-900 dark:text-white">OpenChat</span>
           </div>
 
-          <button
-            onClick={toggleTheme}
-            className="p-1.5 rounded text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
-            title={theme === "light" ? "Dark mode" : "Light mode"}
-          >
-            {theme === "light" ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
-          </button>
+          <SessionMenu />
         </header>
 
         <div className="flex-1 min-h-0 w-full overflow-hidden">

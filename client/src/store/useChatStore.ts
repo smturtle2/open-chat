@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { applyTheme, readThemePreference, writeThemePreference, type ThemePreference } from "../theme";
 
 export interface AttachmentMeta {
   id?: string;
@@ -23,10 +24,15 @@ export interface Message {
   created_at: string;
 }
 
+export type SessionMode = "chat" | "agent";
+
 export interface Session {
   id: string;
   title: string;
   model: string;
+  provider: string | null;
+  mode: SessionMode;
+  workdir: string | null;
   status: "idle" | "running";
   created_at: string;
   updated_at: string;
@@ -42,8 +48,13 @@ export interface ActiveToolCall {
 
 export interface ModelInfo {
   id: string;
-  object: string;
-  owned_by?: string;
+  name?: string;
+}
+
+export interface ModelGroup {
+  provider_id: string;
+  provider_name: string;
+  models: ModelInfo[];
 }
 
 interface ChatState {
@@ -55,11 +66,11 @@ interface ChatState {
   currentContent: string;
   activeToolCalls: ActiveToolCall[];
   sidebarOpen: boolean;
-  theme: "light" | "dark";
+  theme: ThemePreference;
   eventSource: EventSource | null;
-  models: ModelInfo[];
+  modelGroups: ModelGroup[];
+  selectedProvider: string;
   selectedModel: string;
-  defaultModel: string;
   lastError: string | null;
   pendingAttachments: AttachmentMeta[];
   uploading: boolean;
@@ -67,18 +78,17 @@ interface ChatState {
   // Actions
   addFiles: (files: File[] | FileList) => Promise<void>;
   removePendingAttachment: (id: string) => void;
-  setTheme: (theme: "light" | "dark") => void;
-  toggleTheme: () => void;
+  setTheme: (theme: ThemePreference) => void;
   setSidebarOpen: (open: boolean) => void;
   fetchSessions: () => Promise<void>;
   fetchModels: () => Promise<void>;
-  createSession: () => Promise<string>;
+  createSession: (mode?: SessionMode, workdir?: string) => Promise<string>;
   selectSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
   updateSessionTitle: (id: string, title: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
   clearError: () => void;
-  setSelectedModel: (model: string) => Promise<void>;
+  setSelectedModel: (model: string, provider?: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   editMessage: (messageId: string, newContent: string) => Promise<void>;
   regenerateMessage: (messageId: string) => Promise<void>;
@@ -95,11 +105,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentContent: "",
   activeToolCalls: [],
   sidebarOpen: true,
-  theme: (localStorage.getItem("openchat_theme") as "light" | "dark") || "light",
+  theme: readThemePreference(),
   eventSource: null,
-  models: [],
+  modelGroups: [],
+  selectedProvider: localStorage.getItem("openchat_provider") || "",
   selectedModel: localStorage.getItem("openchat_model") || "",
-  defaultModel: "",
   lastError: null,
   pendingAttachments: [],
   uploading: false,
@@ -134,18 +144,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setTheme: (theme) => {
-    localStorage.setItem("openchat_theme", theme);
-    if (theme === "dark") {
-      document.documentElement.classList.add("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-    }
+    writeThemePreference(theme);
+    applyTheme(theme);
     set({ theme });
-  },
-
-  toggleTheme: () => {
-    const next = get().theme === "light" ? "dark" : "light";
-    get().setTheme(next);
   },
 
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
@@ -157,18 +158,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const res = await fetch("/api/models");
       if (!res.ok) return;
       const data = await res.json();
-      const models: ModelInfo[] = (data.data || []).map((m: any) => ({
-        id: m.id,
-        object: m.object,
-        owned_by: m.owned_by,
+      const groups: ModelGroup[] = (data.groups || []).map((g: any) => ({
+        provider_id: g.provider_id,
+        provider_name: g.provider_name,
+        models: (g.models || []).map((m: any) => ({ id: m.id, name: m.name })),
       }));
-      const defaultModel: string = data.default || "";
-      set((state) => ({
-        models,
-        defaultModel,
-        // Adopt the platform default only until the user picks one.
-        selectedModel: state.selectedModel || defaultModel,
-      }));
+      set((state) => {
+        // Adopt the platform default only while the user has not picked a
+        // (provider, model) pair that exists in the catalog.
+        const storedUsable =
+          state.selectedProvider &&
+          state.selectedModel &&
+          groups.some(
+            (g) =>
+              g.provider_id === state.selectedProvider &&
+              g.models.some((m) => m.id === state.selectedModel)
+          );
+        if (storedUsable || groups.length === 0) return { modelGroups: groups };
+        const def = data.default;
+        if (def?.provider && def?.model) {
+          localStorage.setItem("openchat_provider", def.provider);
+          localStorage.setItem("openchat_model", def.model);
+          return { modelGroups: groups, selectedProvider: def.provider, selectedModel: def.model };
+        }
+        const first = groups[0];
+        return first
+          ? {
+              modelGroups: groups,
+              selectedProvider: first.provider_id,
+              selectedModel: first.models[0]?.id ?? "",
+            }
+          : { modelGroups: groups };
+      });
     } catch {}
   },
 
@@ -188,14 +209,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch {}
   },
 
-  createSession: async () => {
+  createSession: async (mode: SessionMode = "chat", workdir?: string) => {
     try {
-      const { selectedModel } = get();
+      const { selectedModel, selectedProvider } = get();
       const res = await fetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: "New Chat", model: selectedModel || get().defaultModel }),
+        body: JSON.stringify({
+          title: mode === "agent" ? "New Agent" : "New Chat",
+          model: selectedModel,
+          provider: selectedProvider || undefined,
+          mode,
+          workdir,
+        }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Failed to create session" }));
+        set({ lastError: err.error || "Failed to create session" });
+        return "";
+      }
       const session: Session = await res.json();
       set((state) => ({
         sessions: [session, ...state.sessions],
@@ -205,7 +237,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         currentContent: "",
         activeToolCalls: [],
         isGenerating: false,
-        selectedModel: session.model || selectedModel,
+        selectedProvider: session.provider || state.selectedProvider,
+        selectedModel: session.model || state.selectedModel,
       }));
       get().connectSSE(session.id, 0);
       return session.id;
@@ -256,13 +289,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
 
       const isRunning = data.status === "running";
-      const sessionModel = data.model || get().defaultModel;
+      const sessionModel = data.model || get().selectedModel;
+      const sessionProvider = data.provider || "";
 
       set({
         messages: rawMessages,
         isGenerating: isRunning,
         selectedModel: sessionModel,
+        selectedProvider: sessionProvider,
       });
+      if (sessionProvider) localStorage.setItem("openchat_provider", sessionProvider);
       localStorage.setItem("openchat_model", sessionModel);
 
       get().connectSSE(id, data.last_event_id || 0);
@@ -303,10 +339,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     await get().updateSessionTitle(id, title);
   },
 
-  setSelectedModel: async (model: string) => {
-    const { currentSessionId } = get();
-    set({ selectedModel: model });
+  setSelectedModel: async (model: string, provider?: string) => {
+    const { currentSessionId, selectedProvider } = get();
+    const nextProvider = provider ?? selectedProvider;
+    set({ selectedModel: model, selectedProvider: nextProvider });
     localStorage.setItem("openchat_model", model);
+    localStorage.setItem("openchat_provider", nextProvider);
 
     // Persist to current session
     if (currentSessionId) {
@@ -314,11 +352,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         await fetch(`/api/sessions/${currentSessionId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model }),
+          body: JSON.stringify({ model, provider: nextProvider || null }),
         });
         set((state) => ({
           sessions: state.sessions.map((s) =>
-            s.id === currentSessionId ? { ...s, model } : s
+            s.id === currentSessionId ? { ...s, model, provider: nextProvider || null } : s
           ),
         }));
       } catch {}
