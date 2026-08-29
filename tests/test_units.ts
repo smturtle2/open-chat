@@ -46,7 +46,6 @@ async function startMockGateway(): Promise<{ url: string; close: () => void }> {
       { id: "mock/large", name: "Mock Large" },
       { id: "mock/small" },
     ] }));
-    setTimeout(() => server.close(), 100); // serve a couple of requests then stop
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const addr = server.address() as { port: number };
@@ -82,6 +81,7 @@ async function main() {
   const groups = await listModelGroups();
   const gwGroup = groups.find((g) => g.provider_id === created.id);
   check("model group auto-populated", !!gwGroup && gwGroup.models.length === 2);
+  gateway.close();
 
   // ---- resolution precedence ---------------------------------------------
   updateProvider("opencode", { api_key: "sk-env" }); // keyed enabled provider

@@ -10,7 +10,7 @@ export interface ToolDefinition {
     parameters: {
       type: "object";
       properties: Record<string, any>;
-      required: string[];
+      required?: string[];
     };
   };
 }

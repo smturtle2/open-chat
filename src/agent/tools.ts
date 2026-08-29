@@ -245,7 +245,6 @@ function schemasFor(mode: SessionMode): ToolDefinition[] {
             path: { type: "string", description: "Optional folder path to list (default root)." },
             depth: { type: "number", description: "Maximum folder traversal depth (default 2, max 5)." },
           },
-          required: [],
         },
       },
     },
