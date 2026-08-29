@@ -57,13 +57,10 @@ echo -e "\n${BOLD}[2/6] Checking Docker Engine & Sandbox environment...${NC}"
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   echo -e "  ${YELLOW}!${NC} Docker not found or daemon not running. Attempting automatic installation..."
   if command -v curl >/dev/null 2>&1; then
-    # Run official Docker installation script
     (curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && (sh /tmp/get-docker.sh 2>/dev/null || sudo sh /tmp/get-docker.sh 2>/dev/null || true)) || true
     rm -f /tmp/get-docker.sh
-    # Add user to docker group
     CURRENT_USER="$(whoami 2>/dev/null || echo root)"
     usermod -aG docker "$CURRENT_USER" 2>/dev/null || sudo usermod -aG docker "$CURRENT_USER" 2>/dev/null || true
-    # Start docker daemon
     systemctl enable --now docker 2>/dev/null || sudo systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || sudo service docker start 2>/dev/null || true
   fi
 fi
@@ -155,33 +152,141 @@ else
   echo -e "  ${GREEN}✓${NC} Existing .env preserved"
 fi
 
-# Create global launcher binary
+# Create global launcher binary with service management
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
 
 LAUNCHER="$BIN_DIR/openchat"
-cat << EOF > "$LAUNCHER"
+cat << 'EOF' > "$LAUNCHER"
 #!/usr/bin/env bash
-# OpenChat Global Launcher
-export OPENCHAT_HOME="\${OPENCHAT_HOME:-\$HOME/.openchat}"
-cd "$TARGET_DIR" && exec npm start "\$@"
+# OpenChat Global Launcher & Service Manager
+set -e
+
+export OPENCHAT_HOME="${OPENCHAT_HOME:-$HOME/.openchat}"
+APP_DIR="__TARGET_DIR_PLACEHOLDER__"
+
+usage() {
+  echo "OpenChat CLI"
+  echo ""
+  echo "Usage:"
+  echo "  openchat                   Start OpenChat in foreground"
+  echo "  openchat service <command> Manage background systemd service"
+  echo ""
+  echo "Service Commands:"
+  echo "  openchat service install   Register and start OpenChat systemd service"
+  echo "  openchat service start     Start the background service"
+  echo "  openchat service stop      Stop the background service"
+  echo "  openchat service restart   Restart the background service"
+  echo "  openchat service status    View service status"
+  echo "  openchat service logs      Follow real-time service logs"
+  echo "  openchat service uninstall Remove systemd service"
+  echo ""
+}
+
+case "${1:-}" in
+  service)
+    subcmd="${2:-}"
+    case "$subcmd" in
+      install|enable)
+        echo "Registering OpenChat systemd service..."
+        UNIT_FILE="/etc/systemd/system/openchat.service"
+        TEMP_UNIT="/tmp/openchat.service.$$"
+        CURRENT_USER="$(whoami 2>/dev/null || echo root)"
+        NPM_BIN="$(command -v npm || echo /usr/bin/npm)"
+
+        cat << UNIT > "$TEMP_UNIT"
+[Unit]
+Description=OpenChat - Autonomous AI Assistant Server
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=$CURRENT_USER
+WorkingDirectory=$APP_DIR
+Environment=NODE_ENV=production
+Environment=OPENCHAT_HOME=$OPENCHAT_HOME
+EnvironmentFile=-$APP_DIR/.env
+ExecStart=$NPM_BIN start
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+        if [ "$CURRENT_USER" = "root" ]; then
+          mv "$TEMP_UNIT" "$UNIT_FILE"
+          systemctl daemon-reload
+          systemctl enable --now openchat.service
+        else
+          sudo mv "$TEMP_UNIT" "$UNIT_FILE"
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now openchat.service
+        fi
+        echo "✓ OpenChat service installed and started successfully!"
+        ;;
+      start)
+        systemctl start openchat.service 2>/dev/null || sudo systemctl start openchat.service
+        ;;
+      stop)
+        systemctl stop openchat.service 2>/dev/null || sudo systemctl stop openchat.service
+        ;;
+      restart)
+        systemctl restart openchat.service 2>/dev/null || sudo systemctl restart openchat.service
+        ;;
+      status)
+        systemctl status openchat.service --no-pager 2>/dev/null || sudo systemctl status openchat.service --no-pager
+        ;;
+      logs)
+        journalctl -u openchat.service -f 2>/dev/null || sudo journalctl -u openchat.service -f
+        ;;
+      uninstall|remove)
+        systemctl disable --now openchat.service 2>/dev/null || sudo systemctl disable --now openchat.service 2>/dev/null || true
+        rm -f /etc/systemd/system/openchat.service 2>/dev/null || sudo rm -f /etc/systemd/system/openchat.service 2>/dev/null || true
+        systemctl daemon-reload 2>/dev/null || sudo systemctl daemon-reload 2>/dev/null || true
+        echo "✓ OpenChat service uninstalled."
+        ;;
+      *)
+        usage
+        exit 1
+        ;;
+    esac
+    ;;
+  help|--help|-h)
+    usage
+    ;;
+  *)
+    cd "$APP_DIR" && exec npm start "$@"
+    ;;
+esac
 EOF
+
+sed -i "s|__TARGET_DIR_PLACEHOLDER__|$TARGET_DIR|g" "$LAUNCHER"
 chmod +x "$LAUNCHER"
 echo -e "  ${GREEN}✓${NC} Created global launcher: $LAUNCHER"
+
+# 7. Auto-restart systemd service if running
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl is-active openchat.service >/dev/null 2>&1; then
+    echo -e "\n${BOLD}🔄 Restarting OpenChat background service with latest updates...${NC}"
+    systemctl restart openchat.service 2>/dev/null || sudo systemctl restart openchat.service 2>/dev/null || true
+    echo -e "  ${GREEN}✓${NC} OpenChat service restarted successfully"
+  fi
+fi
 
 echo -e "\n${BOLD}${GREEN}=======================================================${NC}"
 echo -e "${BOLD}${GREEN}   🎉 OpenChat setup & build completed successfully!   ${NC}"
 echo -e "${BOLD}${GREEN}=======================================================${NC}"
 
-echo -e "\n${BOLD}How to start OpenChat:${NC}"
-if [[ ":$PATH:" == *":$BIN_DIR:"* ]]; then
-  echo -e "  Simply run:"
-  echo -e "    ${BOLD}${GREEN}openchat${NC}"
-else
-  echo -e "  Run either:"
-  echo -e "    ${BOLD}${GREEN}$LAUNCHER${NC}"
-  echo -e "    or"
-  echo -e "    ${BOLD}${BLUE}cd $TARGET_DIR && npm start${NC}"
+echo -e "\n${BOLD}How to use OpenChat:${NC}"
+echo -e "  • Start in foreground:      ${BOLD}${GREEN}openchat${NC}"
+echo -e "  • Register system service:  ${BOLD}${BLUE}openchat service install${NC}"
+echo -e "  • Check service status:     ${BOLD}${BLUE}openchat service status${NC}"
+echo -e "  • View real-time logs:      ${BOLD}${BLUE}openchat service logs${NC}"
+
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   echo -e "\n  ${YELLOW}Tip:${NC} Add ${BOLD}$BIN_DIR${NC} to your PATH to run ${BOLD}openchat${NC} from anywhere:"
   echo -e "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
 fi

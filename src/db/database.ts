@@ -78,10 +78,12 @@ export class AppDatabase {
     this.db = new Database(CONFIG.DB_PATH);
 
     // High performance & concurrency settings
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("synchronous = NORMAL");
-    this.db.pragma("busy_timeout = 5000");
-    this.db.pragma("foreign_keys = ON");
+    this.db.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = NORMAL;
+      PRAGMA busy_timeout = 5000;
+      PRAGMA foreign_keys = ON;
+    `);
 
     this.initSchema();
   }

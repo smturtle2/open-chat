@@ -18,12 +18,17 @@ Install and start OpenChat with a single command:
 curl -fsSL https://raw.githubusercontent.com/smturtle2/open-chat/main/install.sh | bash
 ```
 
-### 🚀 Starting the Server
-
-Run `openchat` from anywhere in your terminal:
+### 🚀 Running OpenChat
 
 ```bash
+# Foreground execution
 openchat
+
+# Run as background systemd service
+openchat service install   # Register and start service
+openchat service status    # Check status
+openchat service logs      # Follow real-time logs
+openchat service restart   # Restart service
 ```
 
 Then open **`http://localhost:3000`** in your browser.
