@@ -21,7 +21,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseObservation } from "./tools.js";
+import { parseObservation } from "./toolTypes.js";
 import { CONFIG } from "../config.js";
 
 export type HistoryRecord = {

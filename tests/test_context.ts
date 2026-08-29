@@ -1,5 +1,3 @@
-// Unit tests for the deterministic history builder (budget cut + aging).
-// Run: npx tsx tests/test_context.ts
 import { buildHistory, receiptFor, HistoryRecord } from "../src/agent/context";
 
 let failures = 0;
@@ -358,3 +356,6 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
 
 console.log(failures === 0 ? "\n>>> ALL PASSED" : `\n>>> ${failures} FAILURES`);
 process.exit(failures ? 1 : 0);
+
+
+

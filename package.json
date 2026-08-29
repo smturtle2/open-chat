@@ -2,9 +2,12 @@
   "name": "openchat",
   "version": "1.0.0",
   "type": "module",
+  "workspaces": [
+    "client"
+  ],
   "scripts": {
     "start": "node --import=tsx src/index.ts",
-    "build": "cd client && npm run build",
+    "build": "npm --prefix client install && npm --prefix client run build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import=tsx tests/test_units.ts && node --import=tsx tests/test_context.ts && node --import=tsx tests/test_new_tools.ts",
     "test:unit": "node --import=tsx tests/test_units.ts && node --import=tsx tests/test_context.ts && node --import=tsx tests/test_new_tools.ts",

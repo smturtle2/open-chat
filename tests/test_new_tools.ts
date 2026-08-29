@@ -65,7 +65,8 @@ async function main() {
   unsub();
 
   console.log(`\nNew tools test: ${pass} passed, ${fail} failed`);
-  process.exitCode = fail > 0 ? 1 : 0;
+  process.exit(fail > 0 ? 1 : 0);
 }
 
 main();
+

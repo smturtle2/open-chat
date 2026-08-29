@@ -213,11 +213,9 @@ export class AppDatabase {
     opts: { mode?: SessionMode; workdir?: string | null; provider?: string | null } = {}
   ): SessionRecord {
     const now = new Date().toISOString();
-    this.db
-      .prepare(
-        "INSERT INTO sessions (id, title, model, provider, mode, workdir, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?)"
-      )
-      .run(id, title, model, opts.provider ?? null, opts.mode ?? "chat", opts.workdir ?? null, now, now);
+    this.prepare(
+      "INSERT INTO sessions (id, title, model, provider, mode, workdir, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?)"
+    ).run(id, title, model, opts.provider ?? null, opts.mode ?? "chat", opts.workdir ?? null, now, now);
     return {
       id,
       title,
@@ -267,27 +265,23 @@ export class AppDatabase {
   addMessage(msg: Omit<MessageRecord, "created_at"> & { created_at?: string }) {
     const now = msg.created_at || new Date().toISOString();
     const toolCallsStr = typeof msg.tool_calls === "object" ? JSON.stringify(msg.tool_calls) : msg.tool_calls;
-    this.db
-      .prepare(
-        "INSERT INTO messages (id, session_id, role, content, thought, tool_calls, tool_call_id, name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      )
-      .run(
-        msg.id,
-        msg.session_id,
-        msg.role,
-        msg.content,
-        msg.thought || null,
-        toolCallsStr || null,
-        msg.tool_call_id || null,
-        msg.name || null,
-        now
-      );
+    this.prepare(
+      "INSERT INTO messages (id, session_id, role, content, thought, tool_calls, tool_call_id, name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(
+      msg.id,
+      msg.session_id,
+      msg.role,
+      msg.content,
+      msg.thought || null,
+      toolCallsStr || null,
+      msg.tool_call_id || null,
+      msg.name || null,
+      now
+    );
   }
 
   getMessages(sessionId: string): MessageRecord[] {
-    return this.db
-      .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY rowid ASC")
-      .all(sessionId) as MessageRecord[];
+    return this.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY rowid ASC").all(sessionId) as MessageRecord[];
   }
 
   updateMessageContent(sessionId: string, messageId: string, content: string): void {
@@ -296,15 +290,16 @@ export class AppDatabase {
 
   // Truncate all messages and events strictly AFTER a specific message ID
   truncateAfterMessage(sessionId: string, messageId: string): void {
-    const targetMsg = this.db
-      .prepare("SELECT rowid, id, created_at FROM messages WHERE session_id = ? AND id = ?")
-      .get(sessionId, messageId) as { rowid: number; id: string; created_at: string } | undefined;
+    const targetMsg = this.prepare("SELECT rowid, id, created_at FROM messages WHERE session_id = ? AND id = ?").get(
+      sessionId,
+      messageId
+    ) as { rowid: number; id: string; created_at: string } | undefined;
 
     if (targetMsg) {
       // Find the corresponding user_message event in events table
-      const targetEvent = this.db
-        .prepare("SELECT id FROM events WHERE session_id = ? AND type = 'user_message' AND payload LIKE ? ORDER BY id ASC LIMIT 1")
-        .get(sessionId, `%"id":"${messageId}"%`) as { id: number } | undefined;
+      const targetEvent = this.prepare(
+        "SELECT id FROM events WHERE session_id = ? AND type = 'user_message' AND payload LIKE ? ORDER BY id ASC LIMIT 1"
+      ).get(sessionId, `%"id":"${messageId}"%`) as { id: number } | undefined;
 
       this.db.transaction(() => {
         this.prepare("DELETE FROM messages WHERE session_id = ? AND rowid > ?").run(sessionId, targetMsg.rowid);
@@ -339,15 +334,16 @@ export class AppDatabase {
   }
 
   getEvents(sessionId: string, afterId: number = 0): EventRecord[] {
-    return this.db
-      .prepare("SELECT * FROM events WHERE session_id = ? AND id > ? ORDER BY id ASC")
-      .all(sessionId, afterId) as EventRecord[];
+    return this.prepare("SELECT * FROM events WHERE session_id = ? AND id > ? ORDER BY id ASC").all(
+      sessionId,
+      afterId
+    ) as EventRecord[];
   }
 
   getLastEventId(sessionId: string): number {
-    const last = this.db
-      .prepare("SELECT id FROM events WHERE session_id = ? ORDER BY id DESC LIMIT 1")
-      .get(sessionId) as { id: number } | undefined;
+    const last = this.prepare("SELECT id FROM events WHERE session_id = ? ORDER BY id DESC LIMIT 1").get(
+      sessionId
+    ) as { id: number } | undefined;
     return last ? last.id : 0;
   }
 
@@ -357,56 +353,63 @@ export class AppDatabase {
   archiveToolOutput(sessionId: string, tool: string, content: string, capChars: number): number {
     const chars = content.length;
     const stored = chars > capChars ? content.slice(0, capChars) + `\n...[archive cap of ${capChars} chars reached]` : content;
-    const info = this.db
-      .prepare("INSERT INTO tool_outputs (session_id, tool, chars, content, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(sessionId, tool, chars, stored, new Date().toISOString());
+    const info = this.prepare("INSERT INTO tool_outputs (session_id, tool, chars, content, created_at) VALUES (?, ?, ?, ?, ?)").run(
+      sessionId,
+      tool,
+      chars,
+      stored,
+      new Date().toISOString()
+    );
     return Number(info.lastInsertRowid);
   }
 
   getToolOutput(sessionId: string, id: number): { id: number; tool: string; chars: number; content: string; created_at: string } | undefined {
-    return this.db
-      .prepare("SELECT id, tool, chars, content, created_at FROM tool_outputs WHERE id = ? AND session_id = ?")
-      .get(id, sessionId) as { id: number; tool: string; chars: number; content: string; created_at: string } | undefined;
+    return this.prepare("SELECT id, tool, chars, content, created_at FROM tool_outputs WHERE id = ? AND session_id = ?").get(
+      id,
+      sessionId
+    ) as { id: number; tool: string; chars: number; content: string; created_at: string } | undefined;
   }
 
   pruneToolOutputs(): number {
     const cutoff = new Date(Date.now() - CONFIG.TOOL_OUTPUT_MAX_AGE_DAYS * 86400_000).toISOString();
     const byAge = this.prepare("DELETE FROM tool_outputs WHERE created_at < ?").run(cutoff);
-    const byCount = this.db
-      .prepare(
-        `DELETE FROM tool_outputs WHERE id IN (
-           SELECT id FROM (
-             SELECT id, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id DESC) AS rn
-             FROM tool_outputs
-           ) WHERE rn > ?
-         )`
-      )
-      .run(CONFIG.TOOL_OUTPUT_KEEP_PER_SESSION);
+    const byCount = this.prepare(
+      `DELETE FROM tool_outputs WHERE id IN (
+         SELECT id FROM (
+           SELECT id, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id DESC) AS rn
+           FROM tool_outputs
+         ) WHERE rn > ?
+       )`
+    ).run(CONFIG.TOOL_OUTPUT_KEEP_PER_SESSION);
     return byAge.changes + byCount.changes;
   }
 
   // Usage ledger: one row per settled tool call, independent of message
   // lifecycle. Powers the per-tool context breakdown.
   recordToolUsage(sessionId: string, tool: string, rawChars: number, visibleChars: number): void {
-    this.db
-      .prepare("INSERT INTO tool_usage (session_id, tool, raw_chars, visible_chars, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(sessionId, tool, rawChars, visibleChars, new Date().toISOString());
+    this.prepare("INSERT INTO tool_usage (session_id, tool, raw_chars, visible_chars, created_at) VALUES (?, ?, ?, ?, ?)").run(
+      sessionId,
+      tool,
+      rawChars,
+      visibleChars,
+      new Date().toISOString()
+    );
   }
 
   // Attachments: uploads land on disk first; the row is created unclaimed and
   // later bound to the user message that references it.
   createAttachment(a: { id: string; session_id: string; kind: "image" | "file" | "skill"; name: string; mime: string; size: number; path: string }): void {
-    this.db
-      .prepare("INSERT INTO attachments (id, session_id, message_id, kind, name, mime, size, path, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)")
-      .run(a.id, a.session_id, a.kind, a.name, a.mime, a.size, a.path, new Date().toISOString());
+    this.prepare(
+      "INSERT INTO attachments (id, session_id, message_id, kind, name, mime, size, path, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)"
+    ).run(a.id, a.session_id, a.kind, a.name, a.mime, a.size, a.path, new Date().toISOString());
   }
 
   getUnclaimedAttachments(sessionId: string, ids: string[]): AttachmentRecord[] {
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => "?").join(",");
-    return this.db
-      .prepare(`SELECT * FROM attachments WHERE session_id = ? AND message_id IS NULL AND id IN (${placeholders})`)
-      .all(sessionId, ...ids) as AttachmentRecord[];
+    return this.prepare(
+      `SELECT * FROM attachments WHERE session_id = ? AND message_id IS NULL AND id IN (${placeholders})`
+    ).all(sessionId, ...ids) as AttachmentRecord[];
   }
 
   claimAttachments(messageId: string, sessionId: string, ids: string[]): AttachmentRecord[] {
@@ -425,12 +428,10 @@ export class AppDatabase {
     totals: { calls: number; raw_chars: number; visible_chars: number };
     breakdown: Array<{ tool: string; calls: number; raw_chars: number; visible_chars: number }>;
   } {
-    const rows = this.db
-      .prepare(
-        `SELECT tool, COUNT(*) AS calls, SUM(raw_chars) AS raw_chars, SUM(visible_chars) AS visible_chars
-         FROM tool_usage WHERE session_id = ? GROUP BY tool ORDER BY raw_chars DESC`
-      )
-      .all(sessionId) as Array<{ tool: string; calls: number; raw_chars: number; visible_chars: number }>;
+    const rows = this.prepare(
+      `SELECT tool, COUNT(*) AS calls, SUM(raw_chars) AS raw_chars, SUM(visible_chars) AS visible_chars
+       FROM tool_usage WHERE session_id = ? GROUP BY tool ORDER BY raw_chars DESC`
+    ).all(sessionId) as Array<{ tool: string; calls: number; raw_chars: number; visible_chars: number }>;
     const totals = rows.reduce(
       (acc, r) => ({
         calls: acc.calls + r.calls,
@@ -469,17 +470,15 @@ export class AppDatabase {
     const now = new Date().toISOString();
     const existing = this.getProvider(p.id);
     const created = existing?.created_at ?? now;
-    this.db
-      .prepare(
-        `INSERT INTO providers (id, name, base_url, api_key, models, enabled, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           name = excluded.name, base_url = excluded.base_url, api_key = excluded.api_key,
-           models = excluded.models, enabled = excluded.enabled,
-           sort_order = CASE WHEN excluded.sort_order = 0 THEN providers.sort_order ELSE excluded.sort_order END,
-           updated_at = excluded.updated_at`
-      )
-      .run(p.id, p.name, p.base_url, p.api_key, JSON.stringify(p.models), p.enabled ? 1 : 0, p.sort_order || (existing?.sort_order ?? 0), created, now);
+    this.prepare(
+      `INSERT INTO providers (id, name, base_url, api_key, models, enabled, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name, base_url = excluded.base_url, api_key = excluded.api_key,
+         models = excluded.models, enabled = excluded.enabled,
+         sort_order = CASE WHEN excluded.sort_order = 0 THEN providers.sort_order ELSE excluded.sort_order END,
+         updated_at = excluded.updated_at`
+    ).run(p.id, p.name, p.base_url, p.api_key, JSON.stringify(p.models || []), p.enabled ? 1 : 0, p.sort_order || 0, created, now);
     return this.getProvider(p.id)!;
   }
 

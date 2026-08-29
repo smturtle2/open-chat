@@ -22,17 +22,23 @@
 
 ## ⚡ 1-Minute Quick Start
 
-Install or update OpenChat with a single command on Linux or macOS:
+Install or update OpenChat with a single universal command on **Linux** or **macOS**:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/smturtle2/open-chat/main/install.sh | bash
 ```
 
-Once installed, start the server and open `http://localhost:3000`:
+### 🚀 Starting OpenChat
+
+Once installed, simply run `openchat` from any terminal:
 
 ```bash
-npm start
+openchat
 ```
+
+Then open your browser at **`http://localhost:3000`**.
+
+> **Note**: OpenChat is installed into `$HOME/.openchat/app` and creates a global launcher at `$HOME/.local/bin/openchat`. All user data, databases, and workspaces are safely stored in `$HOME/.openchat/` and preserved across updates.
 
 ---
 
@@ -112,20 +118,17 @@ If you prefer installing manually from source:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/smturtle2/open-chat.git
-cd open-chat
+git clone https://github.com/smturtle2/open-chat.git ~/.openchat/app
+cd ~/.openchat/app
 
-# 2. Install dependencies
+# 2. Install dependencies & build frontend
 npm install
-npm --prefix client install
-
-# 3. Build the frontend web app
 npm run build
 
-# 4. Configure environment
-cp .env.example .env # (or create .env with PORT=3000)
+# 3. Configure environment (optional)
+cp .env.example .env
 
-# 5. Start the server
+# 4. Start the server
 npm start
 ```
 

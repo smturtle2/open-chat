@@ -1,11 +1,14 @@
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 
 dotenv.config();
 
 const DATA_ROOT = path.resolve(process.env.OPENCHAT_HOME || path.join(os.homedir(), ".openchat"));
+const localDb = path.join(path.dirname(fileURLToPath(import.meta.url)), "../openchat.db");
+const defaultDb = fs.existsSync(localDb) ? localDb : path.join(DATA_ROOT, "openchat.db");
 
 export const CONFIG = {
   PORT: parseInt(process.env.PORT || "3000", 10),
@@ -33,6 +36,6 @@ export const CONFIG = {
   // Replay the current task's reasoning (<think>) in history. Set
   // OPENCHAT_THOUGHT_RETENTION=off to fall back to dropping all thoughts.
   THOUGHT_RETENTION: (process.env.OPENCHAT_THOUGHT_RETENTION || "task") !== "off",
-  DB_PATH: path.resolve(process.env.OPENCHAT_DB_PATH || path.join(path.dirname(fileURLToPath(import.meta.url)), "../openchat.db")),
+  DB_PATH: path.resolve(process.env.OPENCHAT_DB_PATH || defaultDb),
   MAX_AGENT_TURNS: parseInt(process.env.OPENCHAT_MAX_TURNS || "40", 10),
 };
