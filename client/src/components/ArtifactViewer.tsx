@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { X, Copy, Download, Code, Eye, ExternalLink, Check, Sparkles } from "lucide-react";
 import { useChatStore } from "../store/useChatStore";
+import { MarkdownView } from "./MarkdownView";
 
 export const ArtifactViewer: React.FC = () => {
   const { activeArtifact, closeArtifact } = useChatStore();
@@ -46,7 +47,7 @@ export const ArtifactViewer: React.FC = () => {
     }
   };
 
-  const isPreviewable = activeArtifact.type === "html" || activeArtifact.type === "svg";
+  const isPreviewable = ["html", "svg", "markdown"].includes(activeArtifact.type);
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-[#18181b] border-l border-zinc-200 dark:border-zinc-800 shadow-2xl z-20 overflow-hidden">
@@ -93,7 +94,7 @@ export const ArtifactViewer: React.FC = () => {
             </div>
           )}
 
-          {isPreviewable && (
+          {(activeArtifact.type === "html" || activeArtifact.type === "svg") && (
             <button
               onClick={handleOpenNewTab}
               className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
@@ -132,12 +133,23 @@ export const ArtifactViewer: React.FC = () => {
       {/* Artifact Render Container */}
       <div className="flex-1 min-h-0 relative overflow-auto bg-zinc-50 dark:bg-[#121212]">
         {viewMode === "preview" && isPreviewable ? (
-          <iframe
-            srcDoc={activeArtifact.content}
-            sandbox="allow-scripts allow-modals allow-same-origin"
-            className="w-full h-full border-0 bg-white"
-            title="Live Artifact Preview"
-          />
+          activeArtifact.type === "markdown" ? (
+            <div className="p-6 max-w-3xl mx-auto">
+              <MarkdownView content={activeArtifact.content} />
+            </div>
+          ) : activeArtifact.type === "svg" ? (
+            <div
+              className="w-full h-full flex items-center justify-center p-6 bg-zinc-100 dark:bg-zinc-900/60 overflow-auto"
+              dangerouslySetInnerHTML={{ __html: activeArtifact.content }}
+            />
+          ) : (
+            <iframe
+              srcDoc={activeArtifact.content}
+              sandbox="allow-scripts allow-modals allow-same-origin"
+              className="w-full h-full border-0 bg-white"
+              title="Live Artifact Preview"
+            />
+          )
         ) : (
           <div className="p-4">
             <pre className="p-4 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-xs font-mono text-zinc-800 dark:text-zinc-200 leading-relaxed overflow-x-auto whitespace-pre-wrap selection:bg-zinc-200 dark:selection:bg-zinc-700">

@@ -20,11 +20,11 @@ export const BottomSheet: React.FC<BottomSheetProps> = ({ onClose, children }) =
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") dismiss();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [closing]);
 
   const dismiss = () => {
     if (closing) return;
@@ -67,7 +67,7 @@ export const BottomSheet: React.FC<BottomSheetProps> = ({ onClose, children }) =
       {/* Backdrop */}
       <div
         className={`absolute inset-0 bg-black/30 ${closing ? "opacity-0 transition-opacity duration-200" : "animate-backdrop-in"}`}
-        onClick={onClose}
+        onClick={dismiss}
       />
 
       {/* Panel */}
@@ -91,7 +91,7 @@ export const BottomSheet: React.FC<BottomSheetProps> = ({ onClose, children }) =
               setDragY(null);
             }}
             onClick={() => {
-              if (!drag.current.moved) onClose();
+              if (!drag.current.moved) dismiss();
               drag.current.moved = false;
             }}
           >

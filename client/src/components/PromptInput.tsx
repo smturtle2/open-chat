@@ -98,6 +98,8 @@ export const PromptInput: React.FC = () => {
     }
   };
 
+  const [isDragging, setIsDragging] = useState(false);
+
   const handlePaste = (e: React.ClipboardEvent) => {
     const files = Array.from(e.clipboardData?.files || []);
     if (files.length > 0) {
@@ -106,8 +108,20 @@ export const PromptInput: React.FC = () => {
     }
   };
 
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragging(false);
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    setIsDragging(false);
     const files = Array.from(e.dataTransfer?.files || []);
     if (files.length > 0) addFiles(files);
   };
@@ -136,7 +150,8 @@ export const PromptInput: React.FC = () => {
         return;
       }
     }
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    // Enter to submit, Shift+Enter for newline
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
     }
@@ -172,11 +187,25 @@ export const PromptInput: React.FC = () => {
   return (
     <div className="w-full max-w-3xl mx-auto px-4 pb-4">
       <div
-        className="relative flex flex-col bg-white dark:bg-[#1e1e1e] rounded-2xl border border-zinc-300 dark:border-zinc-700/80 shadow-xs focus-within:border-zinc-400 dark:focus-within:border-zinc-500 transition-all"
+        className={`relative flex flex-col bg-white dark:bg-[#1e1e1e] rounded-2xl border shadow-xs transition-all ${
+          isDragging
+            ? "border-violet-500 bg-violet-50/50 dark:bg-violet-950/20 ring-2 ring-violet-400/30"
+            : "border-zinc-300 dark:border-zinc-700/80 focus-within:border-zinc-400 dark:focus-within:border-zinc-500"
+        }`}
         onPaste={handlePaste}
-        onDrop={handleDrop}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
         onDragOver={(e) => e.preventDefault()}
+        onDrop={handleDrop}
       >
+        {isDragging && (
+          <div className="absolute inset-0 z-30 rounded-2xl bg-violet-500/10 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
+            <span className="text-xs font-medium text-violet-600 dark:text-violet-300">
+              Drop files here to attach
+            </span>
+          </div>
+        )}
+
         {/* Slash skill autocomplete */}
         {slashOpen && (
           <div className="absolute left-3 right-3 bottom-full mb-2 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-[#1e1e1e] shadow-lg overflow-hidden z-20">
@@ -226,7 +255,7 @@ export const PromptInput: React.FC = () => {
             value={content}
             onChange={(e) => handleChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Message OpenChat... (Ctrl+Enter to send, Enter for newline)"
+            placeholder="Message OpenChat... (Enter to send, Shift+Enter for newline)"
             rows={1}
             className="flex-1 bg-transparent text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 text-sm leading-relaxed outline-none resize-none max-h-44 py-0.5 font-sans"
           />
@@ -248,7 +277,7 @@ export const PromptInput: React.FC = () => {
                   ? "bg-zinc-900 dark:bg-white text-white dark:text-black hover:opacity-85 cursor-pointer"
                   : "bg-zinc-100 dark:bg-zinc-800 text-zinc-300 dark:text-zinc-600 cursor-not-allowed"
               }`}
-              title="Send (Ctrl+Enter)"
+              title="Send (Enter)"
             >
               <ArrowUp className="w-[18px] h-[18px] stroke-[2.5]" />
             </button>

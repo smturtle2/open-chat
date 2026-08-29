@@ -161,9 +161,11 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
       const copyBtn = target.closest?.(".copy-code-btn") as HTMLButtonElement | null;
       if (copyBtn) {
         navigator.clipboard.writeText(decodeURIComponent(copyBtn.getAttribute("data-code") || ""));
-        copyBtn.innerText = "Copied!";
+        const label = copyBtn.querySelector("span") || copyBtn;
+        const originalText = label.textContent || "Copy";
+        label.textContent = "Copied!";
         setTimeout(() => {
-          copyBtn.innerText = "Copy";
+          label.textContent = originalText;
         }, 2000);
         return;
       }
@@ -185,7 +187,7 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
 
     el.addEventListener("click", onClick);
     return () => el.removeEventListener("click", onClick);
-  });
+  }, []);
 
   return (
     <div

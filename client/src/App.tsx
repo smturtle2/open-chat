@@ -49,9 +49,9 @@ export const App: React.FC = () => {
         </div>
       </div>
 
-      {/* Side-by-Side Live Artifacts Panel */}
+      {/* Live Artifacts Panel: Side-by-Side on desktop, Fullscreen drawer on mobile */}
       {activeArtifact && (
-        <div className="w-full md:w-[45%] lg:w-[42%] max-w-2xl h-full flex-shrink-0 relative">
+        <div className="fixed inset-0 z-50 md:static md:z-auto md:w-[45%] lg:w-[42%] max-w-2xl h-full flex-shrink-0 relative">
           <ArtifactViewer />
         </div>
       )}

@@ -291,14 +291,16 @@ export const Sidebar: React.FC = () => {
     };
   }, []);
 
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
   const handleStartRename = (id: string, currentTitle: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingId(id);
     setEditingTitle(currentTitle);
   };
 
-  const handleSaveRename = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleSaveRename = (id: string, e?: React.SyntheticEvent) => {
+    e?.stopPropagation();
     if (editingTitle.trim()) {
       renameSession(id, editingTitle.trim());
     }
@@ -306,15 +308,17 @@ export const Sidebar: React.FC = () => {
     setRevealId(null);
   };
 
-  const handleDelete = (id: string, e: React.MouseEvent) => {
+  const handleConfirmDelete = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     deleteSession(id);
+    setDeletingId(null);
     setRevealId(null);
   };
 
   const renderRow = (s: Session, icon?: React.ReactNode) => {
     const isSelected = s.id === currentSessionId;
     const isEditing = editingId === s.id;
+    const isDeleting = deletingId === s.id;
     const revealed = revealId === s.id;
 
     return (
@@ -325,17 +329,22 @@ export const Sidebar: React.FC = () => {
             isSelected ? "bg-zinc-200 dark:bg-zinc-800" : "bg-[#f9f9fb] dark:bg-[#141416]"
           } ${revealed ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
         >
-          {!isEditing && (
+          {!isEditing && !isDeleting && (
             <>
               <button
                 onClick={(e) => handleStartRename(s.id, s.title, e)}
-                className="p-1.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                className="p-1.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 cursor-pointer"
+                title="이름 변경"
               >
                 <Edit3 className="w-3.5 h-3.5" />
               </button>
               <button
-                onClick={(e) => handleDelete(s.id, e)}
-                className="p-1.5 text-zinc-400 hover:text-rose-500"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDeletingId(s.id);
+                }}
+                className="p-1.5 text-zinc-400 hover:text-rose-500 cursor-pointer"
+                title="삭제"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -370,13 +379,35 @@ export const Sidebar: React.FC = () => {
                 value={editingTitle}
                 onChange={(e) => setEditingTitle(e.target.value)}
                 onClick={(e) => e.stopPropagation()}
+                onBlur={(e) => handleSaveRename(s.id, e)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSaveRename(s.id, e as any);
+                  if (e.key === "Enter") handleSaveRename(s.id, e);
                   if (e.key === "Escape") setEditingId(null);
                 }}
                 autoFocus
                 className="w-full bg-white dark:bg-zinc-900 border border-zinc-400 rounded px-1.5 py-0.5 text-xs outline-none"
               />
+            ) : isDeleting ? (
+              <div className="flex items-center justify-between w-full" onClick={(e) => e.stopPropagation()}>
+                <span className="text-xs text-rose-500 font-medium truncate">삭제할까요?</span>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button
+                    onClick={(e) => handleConfirmDelete(s.id, e)}
+                    className="px-2 py-0.5 rounded bg-rose-500 text-white text-[11px] font-medium hover:bg-rose-600 cursor-pointer"
+                  >
+                    삭제
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeletingId(null);
+                    }}
+                    className="px-2 py-0.5 rounded bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-200 text-[11px] hover:bg-zinc-300 dark:hover:bg-zinc-600 cursor-pointer"
+                  >
+                    취소
+                  </button>
+                </div>
+              </div>
             ) : (
               <span className="truncate">{s.title}</span>
             )}
