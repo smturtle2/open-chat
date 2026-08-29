@@ -83,20 +83,22 @@ if [ -d "$TARGET_DIR/.git" ]; then
 
   # Backup .env if exists
   if [ -f ".env" ]; then
-    cp .env /tmp/.openchat.env.bak 2>/dev/null || true
+    cp -f .env /tmp/.openchat.env.bak 2>/dev/null || true
   fi
 
-  git fetch origin main
-  git checkout -B main origin/main
+  # Force discard all local uncommitted changes and reset to origin/main
+  git remote set-url origin https://github.com/smturtle2/open-chat.git 2>/dev/null || true
+  git fetch --all --prune
+  git checkout -f -B main origin/main
   git reset --hard origin/main
   git clean -fd -e .env -e .venv
 
   if [ -f "/tmp/.openchat.env.bak" ]; then
-    cp /tmp/.openchat.env.bak .env 2>/dev/null || true
+    cp -f /tmp/.openchat.env.bak .env 2>/dev/null || true
     rm -f /tmp/.openchat.env.bak 2>/dev/null || true
   fi
 
-  echo -e "  ${GREEN}✓${NC} Repository updated to latest version"
+  echo -e "  ${GREEN}✓${NC} Repository updated to latest version ($(git rev-parse --short HEAD))"
 else
   echo -e "  ${BOLD}Cloning OpenChat to: $TARGET_DIR...${NC}"
   mkdir -p "$(dirname "$TARGET_DIR")"
