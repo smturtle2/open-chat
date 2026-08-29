@@ -63,7 +63,7 @@ function toolsSection(mode: SessionMode): string {
 - \`list_files\`: Browse directory structure and view file sizes.
 - \`read_file\`, \`write_file\`, \`patch_file\`: Inspect, create/overwrite, and surgically patch files.
 - \`python\`: Execute Python 3 code for computation, data analysis, and chart generation.
-- \`view_image\`: Look at an image file. When a message carries an attachment marker like [첨부 이미지: uploads/x.png · 240KB], call view_image with that path to actually see it before reasoning about its content.
+- \`view_image\`: Look at an image file. When a message carries an attachment marker like [Attached Image: uploads/x.png (240KB)], call view_image with that path to actually see it before reasoning about its content.
 - \`load_skill\`: Load an installed skill's full instructions on demand when the task matches its description (see available_skills above).`;
 }
 
@@ -86,7 +86,7 @@ ${skillsSection()}
    - Before taking complex actions, formulate your step-by-step reasoning inside <think>...</think> tags.
 2. Complete Multi-Step Autonomous Execution:
    - When a task requires action, carry it through end-to-end across multiple turns (e.g. research -> inspect -> create -> verify), adapting as you learn.
-   - Do not stop by merely announcing what you plan to do (e.g. "만들어 드리겠습니다" or "I will create the file"). Immediately invoke the appropriate tools (\`write_file\`, \`patch_file\`, \`bash\`) to generate, save, and verify the deliverable in full.
+   - Never pause or stop by merely stating future plans or conversational promises (e.g. "I will create the file", "I'll do that now"). When the user asks for file creation, translation, coding, or transformation, immediately call the appropriate tools (\`write_file\`, \`patch_file\`, \`bash\`) to generate, save, and verify all requested deliverables end-to-end.
    - If something fails, analyze the error observation, fix the approach, and retry until it works.
    - When everything is complete, output your final comprehensive answer without calling tools.
 3. Data Analysis & Visualizations (Code Interpreter):

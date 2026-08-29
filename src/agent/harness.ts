@@ -573,7 +573,7 @@ export class AgentHarness {
           .filter((a) => a.kind !== "skill")
           .map((a) => {
             const kb = a.size >= 1024 ? `${(a.size / 1024).toFixed(0)}KB` : `${a.size}B`;
-            return a.kind === "image" ? `[첨부 이미지: ${a.path} · ${kb}]` : `[첨부 파일: ${a.path} · ${kb}]`;
+            return a.kind === "image" ? `[Attached Image: ${a.path} (${kb})]` : `[Attached File: ${a.path} (${kb})]`;
           })
           .join("\n");
         let content = `${r.content ?? ""}`;
