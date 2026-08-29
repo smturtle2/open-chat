@@ -67,9 +67,25 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
       return `<a href="${escapeAttr(resolvedHref)}" target="_blank" rel="noopener noreferrer"${titleAttr} class="text-zinc-900 dark:text-zinc-100 font-medium underline underline-offset-4 decoration-zinc-400 dark:decoration-zinc-500 hover:decoration-zinc-900 dark:hover:decoration-zinc-100 transition-colors break-all cursor-pointer">${text}</a>`;
     };
 
-    // 3. Syntax-highlighted code blocks with Copy button.
-    // The button carries the payload in data-code; the click handler is a
-    // delegated listener below (no inline JS — DOMPurify strips handlers).
+    // 2.1. Inline Image renderer for charts and diagrams
+    renderer.image = ({ href, title, text }: any) => {
+      let resolvedHref = href;
+      if (
+        !href.startsWith("http://") &&
+        !href.startsWith("https://") &&
+        !href.startsWith("data:") &&
+        !href.startsWith("/")
+      ) {
+        if (currentSessionId) {
+          resolvedHref = `/api/sessions/${currentSessionId}/files/${encodeURIComponent(href)}`;
+        }
+      }
+      const titleAttr = title ? ` title="${escapeAttr(String(title))}"` : "";
+      const altAttr = text ? ` alt="${escapeAttr(String(text))}"` : ' alt="image"';
+      return `<div class="my-3"><a href="${escapeAttr(resolvedHref)}" target="_blank" rel="noreferrer" class="block group"><img src="${escapeAttr(resolvedHref)}"${altAttr}${titleAttr} class="max-h-96 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm hover:opacity-95 transition-opacity" loading="lazy" /></a></div>`;
+    };
+
+    // 3. Syntax-highlighted code blocks with Copy & Open Artifact buttons
     renderer.code = (token: any) => {
       const text = token.text || "";
       const lang = token.lang || "plaintext";
@@ -82,18 +98,42 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
       }
 
       const encodedCode = encodeURIComponent(text);
+      const isArtifactType = ["html", "svg", "jsx", "tsx", "react", "mermaid", "markdown", "javascript", "typescript", "python"].includes(lang.toLowerCase());
+      let artifactKind = "code";
+      if (lang.toLowerCase() === "html") artifactKind = "html";
+      else if (lang.toLowerCase() === "svg") artifactKind = "svg";
+      else if (lang.toLowerCase() === "mermaid") artifactKind = "mermaid";
+      else if (["jsx", "tsx", "react"].includes(lang.toLowerCase())) artifactKind = "react";
+      else if (lang.toLowerCase() === "markdown") artifactKind = "markdown";
+
+      const artifactTitle = `${lang.toUpperCase()} Component`;
 
       return `
-        <div class="code-container my-2.5 rounded-lg overflow-hidden border border-zinc-800 bg-[#18181b] font-mono text-[13px]">
+        <div class="code-container my-2.5 rounded-xl overflow-hidden border border-zinc-200/80 dark:border-zinc-800 bg-[#18181b] font-mono text-[13px] shadow-xs">
           <div class="flex items-center justify-between px-3 py-1.5 bg-[#202023] text-zinc-400 text-xs select-none">
             <span class="font-medium text-[11px] text-zinc-300">${escapeAttr(language)}</span>
-            <button
-              type="button"
-              class="copy-code-btn px-1.5 py-0.5 rounded text-[11px] hover:text-white hover:bg-zinc-700 transition-colors cursor-pointer"
-              data-code="${encodedCode}"
-            >
-              <span>Copy</span>
-            </button>
+            <div class="flex items-center gap-1.5">
+              ${
+                isArtifactType
+                  ? `<button
+                      type="button"
+                      class="open-artifact-btn px-2 py-0.5 rounded text-[11px] font-medium text-amber-400 hover:text-amber-300 hover:bg-zinc-700/60 transition-colors cursor-pointer flex items-center gap-1"
+                      data-artifact-title="${escapeAttr(artifactTitle)}"
+                      data-artifact-type="${escapeAttr(artifactKind)}"
+                      data-artifact-code="${encodedCode}"
+                    >
+                      <span>⚡ Open Artifact</span>
+                    </button>`
+                  : ""
+              }
+              <button
+                type="button"
+                class="copy-code-btn px-1.5 py-0.5 rounded text-[11px] hover:text-white hover:bg-zinc-700 transition-colors cursor-pointer"
+                data-code="${encodedCode}"
+              >
+                <span>Copy</span>
+              </button>
+            </div>
           </div>
           <pre class="p-3 overflow-x-auto leading-relaxed text-zinc-200"><code class="hljs language-${language}">${highlighted}</code></pre>
         </div>
@@ -105,24 +145,44 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
     // Final gate: strip scripts/event handlers/javascript: URLs from model-
     // or web-sourced HTML before it ever touches the DOM.
     return DOMPurify.sanitize(rawHtml, {
-      ADD_ATTR: ["data-code", "target"],
+      ADD_ATTR: ["data-code", "data-artifact-title", "data-artifact-type", "data-artifact-code", "target", "loading"],
       FORBID_TAGS: ["style", "form", "iframe"],
     });
   }, [content, currentSessionId]);
 
-  // Delegated copy-button handler for all code blocks in this message.
+  // Delegated click handler for copy & open artifact buttons
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onClick = (e: MouseEvent) => {
-      const btn = (e.target as HTMLElement).closest?.(".copy-code-btn") as HTMLButtonElement | null;
-      if (!btn) return;
-      navigator.clipboard.writeText(decodeURIComponent(btn.getAttribute("data-code") || ""));
-      btn.innerText = "Copied!";
-      setTimeout(() => {
-        btn.innerText = "Copy";
-      }, 2000);
+      const target = e.target as HTMLElement;
+
+      // 1. Copy button
+      const copyBtn = target.closest?.(".copy-code-btn") as HTMLButtonElement | null;
+      if (copyBtn) {
+        navigator.clipboard.writeText(decodeURIComponent(copyBtn.getAttribute("data-code") || ""));
+        copyBtn.innerText = "Copied!";
+        setTimeout(() => {
+          copyBtn.innerText = "Copy";
+        }, 2000);
+        return;
+      }
+
+      // 2. Open Artifact button
+      const artifactBtn = target.closest?.(".open-artifact-btn") as HTMLButtonElement | null;
+      if (artifactBtn) {
+        const title = artifactBtn.getAttribute("data-artifact-title") || "Artifact";
+        const type = (artifactBtn.getAttribute("data-artifact-type") || "code") as any;
+        const code = decodeURIComponent(artifactBtn.getAttribute("data-artifact-code") || "");
+        useChatStore.getState().openArtifact({
+          id: `art_${Date.now()}`,
+          title,
+          type,
+          content: code,
+        });
+      }
     };
+
     el.addEventListener("click", onClick);
     return () => el.removeEventListener("click", onClick);
   });
@@ -135,3 +195,4 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
     />
   );
 };
+

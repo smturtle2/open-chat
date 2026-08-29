@@ -147,7 +147,9 @@ async function main() {
   check("history/tools sections kept", chatPrompt.includes("# History convention:") && chatPrompt.includes("`bash`"));
 
   console.log(`\n${pass} passed, ${fail} failed`);
-  process.exit(fail > 0 ? 1 : 0);
+  database.db.close();
+  process.exitCode = fail > 0 ? 1 : 0;
 }
 
 main();
+

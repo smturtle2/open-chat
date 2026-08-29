@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Bot, MessageCircle, PanelLeftClose, Plus, Trash2, Edit3, Settings, X } from "lucide-react";
+import { Bot, MessageCircle, PanelLeftClose, Plus, Trash2, Edit3, Settings, X, Search } from "lucide-react";
 import { useChatStore, type Session } from "../store/useChatStore";
 import { BottomSheet } from "./BottomSheet";
 import { SettingsSheet } from "./SettingsSheet";
@@ -24,6 +24,7 @@ export const Sidebar: React.FC = () => {
     selectedModel,
   } = useChatStore();
 
+  const [searchQuery, setSearchQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [revealId, setRevealId] = useState<string | null>(null);
@@ -401,8 +402,11 @@ export const Sidebar: React.FC = () => {
     </div>
   );
 
-  const agentSessions = sessions.filter((s) => s.mode === "agent");
-  const chatSessions = sessions.filter((s) => s.mode !== "agent");
+  const filteredSessions = sessions.filter((s) =>
+    s.title.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+  const agentSessions = filteredSessions.filter((s) => s.mode === "agent");
+  const chatSessions = filteredSessions.filter((s) => s.mode !== "agent");
 
   const shortModel = selectedModel.length > 24 ? selectedModel.slice(0, 24) + "…" : selectedModel;
 
@@ -438,6 +442,28 @@ export const Sidebar: React.FC = () => {
             >
               <PanelLeftClose className="w-3.5 h-3.5" />
             </button>
+          </div>
+
+          {/* Search Box */}
+          <div className="pt-2">
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-zinc-200/60 dark:bg-zinc-800/80 border border-zinc-200/80 dark:border-zinc-700/60 text-xs text-zinc-600 dark:text-zinc-300">
+              <Search className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
+              <input
+                type="text"
+                placeholder="대화 검색..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-transparent outline-none text-xs placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery("")}
+                  className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
 

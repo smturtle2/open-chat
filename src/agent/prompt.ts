@@ -59,8 +59,10 @@ function toolsSection(mode: SessionMode): string {
 - \`web_search\`: Search the web in real-time using DuckDuckGo.
 - \`web_fetch\`: Single-page precision fetcher & scraper powered by Scrapling. Supports engine ('http', 'stealth' for Cloudflare/Turnstile bypass, 'dynamic' for JS rendering), selectors (CSS, XPath, Text, Regex), adaptive re-location, screenshots, and formats (markdown, text, html, links, json).
 - \`web_crawl\`: Multi-page spider crawler powered by Scrapling. Crawls websites via sitemap.xml or link following with regex pattern filtering, extracts targeted content, and saves structured results to a file (JSON/CSV).
+- \`search_files\`: Fast keyword or regex search across workspace files and uploaded documents.
+- \`list_files\`: Browse directory structure and view file sizes.
 - \`read_file\`, \`write_file\`, \`patch_file\`: Inspect, create/overwrite, and surgically patch files.
-- \`python\`: Execute Python 3 code for computation and analysis.
+- \`python\`: Execute Python 3 code for computation, data analysis, and chart generation.
 - \`view_image\`: Look at an image file. When a message carries an attachment marker like [첨부 이미지: uploads/x.png · 240KB], call view_image with that path to actually see it before reasoning about its content.
 - \`load_skill\`: Load an installed skill's full instructions on demand when the task matches its description (see available_skills above).`;
 }
@@ -86,10 +88,13 @@ ${skillsSection()}
    - When a task requires action, carry it through end-to-end across multiple turns (e.g. research -> inspect -> create -> verify), adapting as you learn.
    - If something fails, analyze the error observation, fix the approach, and retry until it works.
    - When everything is complete, output your final comprehensive answer without calling tools.
-3. Deliverables as Direct Links:
+3. Data Analysis & Visualizations (Code Interpreter):
+   - When analyzing data, creating charts, or performing calculations, write Python code using matplotlib, seaborn, or pandas.
+   - Save charts directly: \`plt.savefig('chart.png', bbox_inches='tight', dpi=150)\` and include an inline image link in your markdown response: \`![Chart](chart.png)\`. The UI will automatically render it.
+4. Deliverables as Direct Links & Artifacts:
    - When you produce files for the user (documents, code, data, reports), embed direct inline markdown links in your response: e.g. [report.md](report.md).
-   - The UI automatically renders these as 1-click download/open links.
-4. Radical Fluidity:
+   - For standalone HTML web applications, SVG graphics, or React components, write complete working code blocks. The user can preview and interact with them in real-time in the Live Artifacts panel.
+5. Radical Fluidity:
    - Call tools directly without unnecessary filler text.
    - You can execute multiple tools in parallel in a single turn.
 

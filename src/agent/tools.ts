@@ -10,8 +10,11 @@ import {
   formatExec,
   runDockerExec,
   runHostProc,
+  dockerAvailable,
+  AGENT_SCRIPTS_DIR,
 } from "./exec.js";
-import { fsOp, viewImage, type FsRequest } from "./filesys.js";
+import path from "node:path";
+import { fsOp, viewImage, searchFilesOp, listFilesOp, type FsRequest } from "./filesys.js";
 import type { ToolDefinition, ToolObservation } from "./toolTypes.js";
 
 export {
@@ -216,6 +219,39 @@ function schemasFor(mode: SessionMode): ToolDefinition[] {
     {
       type: "function",
       function: {
+        name: "search_files",
+        description: "Search for keywords or regex patterns across files and documents in the session workspace. Returns matching filenames, line numbers, and snippets.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Search term or regex pattern to look for." },
+            path: { type: "string", description: "Optional subfolder path to restrict the search to." },
+            is_regex: { type: "boolean", description: "Whether to treat query as a regular expression (default false)." },
+            case_sensitive: { type: "boolean", description: "Whether to perform case-sensitive search (default false)." },
+            max_results: { type: "number", description: "Maximum number of results to return (default 30, max 100)." },
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "list_files",
+        description: "List files and subdirectories in the session workspace with folder tree structure and file sizes.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Optional folder path to list (default root)." },
+            depth: { type: "number", description: "Maximum folder traversal depth (default 2, max 5)." },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "load_skill",
         description: "Load the full instructions of an installed skill from the available_skills list. Call this when a task matches a skill's description and before following its workflow. Returns the skill body plus its base directory and bundled files.",
         parameters: {
@@ -269,6 +305,14 @@ export class ToolRegistry {
           rawResult = await this.webCrawl(args, ctx, signal);
           break;
 
+        case "search_files":
+          rawResult = await files(ctx, { op: "search" as any, query: args.query || "", path: args.path, isRegex: Boolean(args.is_regex), caseSensitive: Boolean(args.case_sensitive), maxResults: args.max_results });
+          break;
+
+        case "list_files":
+          rawResult = await files(ctx, { op: "list" as any, path: args.path, depth: args.depth });
+          break;
+
         case "read_file":
           rawResult = await files(ctx, { op: "read", path: args.path || "", offset: args.offset, limit: args.limit });
           break;
@@ -313,8 +357,9 @@ export class ToolRegistry {
 
   private async bash(command: string, ctx: ToolContext, signal?: AbortSignal): Promise<string> {
     if (!command.trim()) return "Error: No command provided.";
+    const hasDocker = await dockerAvailable();
     const result =
-      ctx.mode === "agent"
+      ctx.mode === "agent" || !hasDocker
         ? await runHostProc(["bash", "-c", command], ctx.cwd, { timeoutMs: BASH_TIMEOUT_MS, label: "Execution", signal })
         : await runDockerExec(await this.requireContainer(ctx), ["bash", "-c", command], { timeoutMs: BASH_TIMEOUT_MS, label: "Execution", signal });
     return this.settle("bash", ctx.sessionId, formatExec(result));
@@ -322,8 +367,9 @@ export class ToolRegistry {
 
   private async python(code: string, ctx: ToolContext, signal?: AbortSignal): Promise<string> {
     if (!code.trim()) return "Error: No code provided.";
+    const hasDocker = await dockerAvailable();
     const result =
-      ctx.mode === "agent"
+      ctx.mode === "agent" || !hasDocker
         ? await runHostProc(["python3", "-c", code], ctx.cwd, { timeoutMs: PYTHON_TIMEOUT_MS, label: "Python execution", signal })
         : await runDockerExec(await this.requireContainer(ctx), ["python3", "-c", code], { timeoutMs: PYTHON_TIMEOUT_MS, label: "Python execution", signal });
     return this.settle("python", ctx.sessionId, formatExec(result));
@@ -331,16 +377,13 @@ export class ToolRegistry {
 
   // ------------------------------------------------------------------ web tools
 
-  // Web scraping depends on the sandbox image's Python stack (scrapling +
-  // playwright), so both modes route these calls through the session's
-  // container. In agent mode the container is a lazily created scraping
-  // backend with the same working directory mounted — bash/fs stay on the
-  // host; only hostile-content processing stays boxed.
   private async webSearch(query: string, ctx: ToolContext, signal?: AbortSignal): Promise<string> {
     if (!query || !query.trim()) return "Error: Query is required";
     const cleanQuery = query.trim();
-    const container = await this.requireContainer(ctx);
-    const r = await runDockerExec(container, ["python3", "/opt/agent/web_search.py", cleanQuery, "10"], { timeoutMs: 60000, label: "Web search", signal });
+    const hasDocker = await dockerAvailable();
+    const r = hasDocker
+      ? await runDockerExec(await this.requireContainer(ctx), ["python3", "/opt/agent/web_search.py", cleanQuery, "10"], { timeoutMs: 60000, label: "Web search", signal })
+      : await runHostProc(["python3", path.join(AGENT_SCRIPTS_DIR, "web_search.py"), cleanQuery, "10"], ctx.cwd, { timeoutMs: 60000, label: "Web search", signal });
 
     let items: Array<{ title?: string; url?: string; snippet?: string }> = [];
     try { items = JSON.parse(r.out.trim()); } catch {}
@@ -368,8 +411,10 @@ export class ToolRegistry {
       screenshot: Boolean(args.screenshot),
       adaptive: Boolean(args.adaptive),
     });
-    const container = await this.requireContainer(ctx);
-    const r = await runDockerExec(container, ["python3", "/opt/agent/scrapling_fetch.py", jsonArgs, "/workspace"], { timeoutMs: 45000, label: "Scrapling fetch", signal });
+    const hasDocker = await dockerAvailable();
+    const r = hasDocker
+      ? await runDockerExec(await this.requireContainer(ctx), ["python3", "/opt/agent/scrapling_fetch.py", jsonArgs, "/workspace"], { timeoutMs: 45000, label: "Scrapling fetch", signal })
+      : await runHostProc(["python3", path.join(AGENT_SCRIPTS_DIR, "scrapling_fetch.py"), jsonArgs, ctx.cwd], ctx.cwd, { timeoutMs: 45000, label: "Scrapling fetch", signal });
     return this.settle("web_fetch", ctx.sessionId, r.out.trim() || r.err.trim() || "[Scrapling fetch finished with no output]");
   }
 
@@ -383,8 +428,10 @@ export class ToolRegistry {
       concurrency: args.concurrency || 4,
       output_file: args.output_file || "crawl_results.json",
     });
-    const container = await this.requireContainer(ctx);
-    const r = await runDockerExec(container, ["python3", "/opt/agent/scrapling_crawl.py", jsonArgs, "/workspace"], { timeoutMs: 60000, label: "Scrapling crawl", signal });
+    const hasDocker = await dockerAvailable();
+    const r = hasDocker
+      ? await runDockerExec(await this.requireContainer(ctx), ["python3", "/opt/agent/scrapling_crawl.py", jsonArgs, "/workspace"], { timeoutMs: 60000, label: "Scrapling crawl", signal })
+      : await runHostProc(["python3", path.join(AGENT_SCRIPTS_DIR, "scrapling_crawl.py"), jsonArgs, ctx.cwd], ctx.cwd, { timeoutMs: 60000, label: "Scrapling crawl", signal });
     return this.settle("web_crawl", ctx.sessionId, r.out.trim() || r.err.trim() || `[Scrapling crawl finished with code ${r.code}]`);
   }
 
@@ -439,8 +486,15 @@ export class ToolRegistry {
 }
 
 /** File operations run against the context root via the shared filesys layer. */
-async function files(ctx: ToolContext, req: FsRequest): Promise<string> {
+async function files(ctx: ToolContext, req: any): Promise<string> {
+  if (req.op === "search") {
+    return searchFilesOp(ctx.cwd, req);
+  }
+  if (req.op === "list") {
+    return listFilesOp(ctx.cwd, req);
+  }
   return fsOp(ctx.cwd, req);
 }
 
 export const tools = new ToolRegistry();
+

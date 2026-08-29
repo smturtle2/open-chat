@@ -5,10 +5,11 @@ import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { PromptInput } from "./components/PromptInput";
 import { SessionMenu } from "./components/SessionMenu";
+import { ArtifactViewer } from "./components/ArtifactViewer";
 import { initTheme } from "./theme";
 
 export const App: React.FC = () => {
-  const { fetchSessions, fetchModels, sidebarOpen, setSidebarOpen } = useChatStore();
+  const { fetchSessions, fetchModels, sidebarOpen, setSidebarOpen, activeArtifact } = useChatStore();
 
   useEffect(() => {
     fetchSessions();
@@ -20,7 +21,8 @@ export const App: React.FC = () => {
     <div className="w-full h-full flex overflow-hidden bg-white dark:bg-[#121212] text-zinc-900 dark:text-zinc-100 font-sans antialiased">
       <Sidebar />
 
-      <div className="flex-1 flex flex-col h-full w-full min-w-0 overflow-hidden relative">
+      {/* Main Chat Area */}
+      <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
         {/* Header */}
         <header className="h-11 border-b border-zinc-200/80 dark:border-zinc-800 flex items-center justify-between px-4 flex-shrink-0 bg-white dark:bg-[#121212] z-10">
           <div className="flex items-center gap-2">
@@ -46,6 +48,14 @@ export const App: React.FC = () => {
           <PromptInput />
         </div>
       </div>
+
+      {/* Side-by-Side Live Artifacts Panel */}
+      {activeArtifact && (
+        <div className="w-full md:w-[45%] lg:w-[42%] max-w-2xl h-full flex-shrink-0 relative">
+          <ArtifactViewer />
+        </div>
+      )}
     </div>
   );
 };
+

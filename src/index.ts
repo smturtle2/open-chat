@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { CONFIG } from "./config.js";
 import { db } from "./db/database.js";
 import { coordinator } from "./agent/coordinator.js";
+import { eventBus } from "./agent/eventBus.js";
 import { sniffImageMime } from "./agent/tools.js";
 import { listSkills, syncBuiltinSkills } from "./agent/skills.js";
 import { tools } from "./agent/tools.js";
@@ -436,28 +437,46 @@ app.get("/api/sessions/:id/events", (c) => {
   return streamSSE(c, async (stream) => {
     let currentId = isNaN(lastEventId) ? 0 : lastEventId;
     let isActive = true;
-    // Poll fast while the session is actively streaming; back off when idle
-    // to keep per-connection DB load near zero.
-    let sleepMs = 100;
 
-    stream.onAbort(() => {
-      isActive = false;
-    });
+    // 1. Flush unread historical events on reconnect
+    const initialEvents = db.getEvents(id, currentId);
+    for (const event of initialEvents) {
+      await stream.writeSSE({
+        event: event.type,
+        data: event.payload,
+        id: String(event.id),
+      });
+      currentId = event.id!;
+    }
 
-    while (isActive) {
-      const events = db.getEvents(id, currentId);
-      for (const event of events) {
-        if (!isActive) break;
+    // 2. Real-time event push via in-memory EventBus (0ms latency, zero DB polling)
+    const unsubscribe = eventBus.subscribe(id, async (event) => {
+      if (!isActive) return;
+      try {
         await stream.writeSSE({
           event: event.type,
           data: event.payload,
           id: String(event.id),
         });
-        currentId = event.id!;
-      }
-      sleepMs = events.length > 0 ? 100 : Math.min(sleepMs * 2, 1000);
-      await stream.sleep(sleepMs);
-    }
+      } catch {}
+    });
+
+    // 3. Keep-alive ping (every 25s) to keep connections alive across proxies
+    const pingTimer = setInterval(async () => {
+      if (!isActive) return;
+      try {
+        await stream.writeSSE({ event: "ping", data: "{}" });
+      } catch {}
+    }, 25000);
+
+    stream.onAbort(() => {
+      isActive = false;
+      unsubscribe();
+      clearInterval(pingTimer);
+    });
+
+    // Hold connection open
+    await new Promise<void>((resolve) => stream.onAbort(resolve));
   });
 });
 

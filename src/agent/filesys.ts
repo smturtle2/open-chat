@@ -240,3 +240,122 @@ export async function viewImage(rootDir: string, imgPath: string): Promise<{ obs
     return err?.code === "ENOENT" ? `Error: image not found at ${raw}` : `Error: ${err?.message || String(err)}`;
   }
 }
+
+export interface SearchFilesRequest {
+  query: string;
+  path?: string;
+  isRegex?: boolean;
+  caseSensitive?: boolean;
+  maxResults?: number;
+}
+
+export async function searchFilesOp(rootDir: string, req: SearchFilesRequest): Promise<string> {
+  if (!req.query || !req.query.trim()) return "Error: Search query is required.";
+  try {
+    let targetDir = rootDir;
+    if (req.path && req.path.trim()) {
+      const resolved = await resolvePath(rootDir, req.path);
+      targetDir = resolved.abs;
+    }
+    const maxResults = Math.min(Math.max(Number(req.maxResults) || 30, 1), 100);
+    const results: Array<{ file: string; line: number; text: string }> = [];
+
+    const walk = async (dir: string) => {
+      if (results.length >= maxResults) return;
+      const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (results.length >= maxResults) break;
+        if (entry.name.startsWith(".") && entry.name !== ".openchat") continue;
+        if (["node_modules", ".git", ".venv", "__pycache__", "dist", "build", "coverage"].includes(entry.name)) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(full);
+        } else if (entry.isFile()) {
+          try {
+            const stat = await fsp.stat(full);
+            if (stat.size > 2 * 1024 * 1024) continue;
+            const content = await fsp.readFile(full, "utf8");
+            const lines = content.split(/\r?\n/);
+            for (let idx = 0; idx < lines.length; idx++) {
+              const line = lines[idx];
+              let isMatch = false;
+              if (req.isRegex) {
+                try {
+                  const re = new RegExp(req.query, req.caseSensitive ? "" : "i");
+                  isMatch = re.test(line);
+                } catch {
+                  return "Error: Invalid regular expression pattern.";
+                }
+              } else {
+                isMatch = req.caseSensitive
+                  ? line.includes(req.query)
+                  : line.toLowerCase().includes(req.query.toLowerCase());
+              }
+              if (isMatch) {
+                const rel = path.relative(rootDir, full);
+                results.push({ file: rel, line: idx + 1, text: line.trim().slice(0, 180) });
+                if (results.length >= maxResults) break;
+              }
+            }
+          } catch {}
+        }
+      }
+    };
+
+    await walk(targetDir);
+    if (results.length === 0) return `No matches found for "${req.query}".`;
+    const formatted = results.map((r) => `${r.file}:${r.line}: ${r.text}`).join("\n");
+    return `Found ${results.length} match(es):\n${formatted}`;
+  } catch (err: any) {
+    return `Error searching files: ${err.message || String(err)}`;
+  }
+}
+
+export interface ListFilesRequest {
+  path?: string;
+  depth?: number;
+}
+
+export async function listFilesOp(rootDir: string, req: ListFilesRequest): Promise<string> {
+  try {
+    let targetDir = rootDir;
+    if (req.path && req.path.trim()) {
+      const resolved = await resolvePath(rootDir, req.path);
+      targetDir = resolved.abs;
+    }
+    const maxDepth = Math.min(Math.max(Number(req.depth) || 2, 1), 5);
+    const rows: string[] = [];
+
+    const walk = async (dir: string, currentDepth: number, prefix: string) => {
+      if (currentDepth > maxDepth || rows.length >= 150) return;
+      const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+      const sorted = entries.sort((a, b) => {
+        if (a.isDirectory() && !b.isDirectory()) return -1;
+        if (!a.isDirectory() && b.isDirectory()) return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      for (const entry of sorted) {
+        if (rows.length >= 150) break;
+        if (entry.name.startsWith(".") && entry.name !== ".openchat") continue;
+        if (["node_modules", ".git", ".venv", "__pycache__", "dist"].includes(entry.name)) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          rows.push(`${prefix}📁 ${entry.name}/`);
+          await walk(full, currentDepth + 1, prefix + "  ");
+        } else if (entry.isFile()) {
+          const stat = await fsp.stat(full).catch(() => null);
+          const sz = stat ? (stat.size >= 1024 ? `${(stat.size / 1024).toFixed(1)}KB` : `${stat.size}B`) : "";
+          rows.push(`${prefix}📄 ${entry.name} (${sz})`);
+        }
+      }
+    };
+
+    await walk(targetDir, 1, "");
+    if (rows.length === 0) return "Directory is empty.";
+    return rows.join("\n");
+  } catch (err: any) {
+    return `Error listing files: ${err.message || String(err)}`;
+  }
+}
+

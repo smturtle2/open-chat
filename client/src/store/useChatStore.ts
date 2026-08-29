@@ -57,6 +57,14 @@ export interface ModelGroup {
   models: ModelInfo[];
 }
 
+export interface Artifact {
+  id: string;
+  title: string;
+  type: "html" | "react" | "markdown" | "svg" | "mermaid" | "code";
+  content: string;
+  language?: string;
+}
+
 interface ChatState {
   sessions: Session[];
   currentSessionId: string | null;
@@ -66,6 +74,7 @@ interface ChatState {
   currentContent: string;
   activeToolCalls: ActiveToolCall[];
   sidebarOpen: boolean;
+  activeArtifact: Artifact | null;
   theme: ThemePreference;
   eventSource: EventSource | null;
   modelGroups: ModelGroup[];
@@ -76,6 +85,8 @@ interface ChatState {
   uploading: boolean;
 
   // Actions
+  openArtifact: (artifact: Artifact) => void;
+  closeArtifact: () => void;
   addFiles: (files: File[] | FileList) => Promise<void>;
   removePendingAttachment: (id: string) => void;
   setTheme: (theme: ThemePreference) => void;
@@ -105,6 +116,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentContent: "",
   activeToolCalls: [],
   sidebarOpen: true,
+  activeArtifact: null,
   theme: readThemePreference(),
   eventSource: null,
   modelGroups: [],
@@ -113,6 +125,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   lastError: null,
   pendingAttachments: [],
   uploading: false,
+
+  openArtifact: (artifact) => set({ activeArtifact: artifact }),
+  closeArtifact: () => set({ activeArtifact: null }),
+
 
   addFiles: async (files) => {
     const { currentSessionId } = get();

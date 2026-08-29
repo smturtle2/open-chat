@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { CONFIG } from "../config.js";
+import { eventBus } from "../agent/eventBus.js";
 
 export type SessionMode = "chat" | "agent";
 
@@ -70,6 +71,7 @@ export interface AttachmentRecord {
 
 export class AppDatabase {
   private db: Database.Database;
+  private stmtCache = new Map<string, Database.Statement>();
 
   constructor() {
     fs.mkdirSync(path.dirname(CONFIG.DB_PATH), { recursive: true });
@@ -82,6 +84,15 @@ export class AppDatabase {
     this.db.pragma("foreign_keys = ON");
 
     this.initSchema();
+  }
+
+  private prepare(sql: string): Database.Statement {
+    let stmt = this.stmtCache.get(sql);
+    if (!stmt) {
+      stmt = this.db.prepare(sql);
+      this.stmtCache.set(sql, stmt);
+    }
+    return stmt;
   }
 
   private initSchema() {
@@ -178,7 +189,7 @@ export class AppDatabase {
     `);
 
     // Migrations: add columns if missing (ad-hoc, ordered)
-    const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+    const cols = this.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
     const has = (name: string) => cols.some((c) => c.name === name);
     if (!has("model")) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT 'muse-spark-1.2-contributor'`);
@@ -221,35 +232,35 @@ export class AppDatabase {
   }
 
   getSession(id: string): SessionRecord | undefined {
-    return this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRecord | undefined;
+    return this.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRecord | undefined;
   }
 
   listSessions(): SessionRecord[] {
-    return this.db.prepare("SELECT * FROM sessions ORDER BY updated_at DESC").all() as SessionRecord[];
+    return this.prepare("SELECT * FROM sessions ORDER BY updated_at DESC").all() as SessionRecord[];
   }
 
   updateSessionTitle(id: string, title: string) {
     const now = new Date().toISOString();
-    this.db.prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?").run(title, now, id);
+    this.prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?").run(title, now, id);
   }
 
   updateSessionModel(id: string, model: string) {
     const now = new Date().toISOString();
-    this.db.prepare("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?").run(model, now, id);
+    this.prepare("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?").run(model, now, id);
   }
 
   updateSessionProvider(id: string, provider: string | null) {
     const now = new Date().toISOString();
-    this.db.prepare("UPDATE sessions SET provider = ?, updated_at = ? WHERE id = ?").run(provider, now, id);
+    this.prepare("UPDATE sessions SET provider = ?, updated_at = ? WHERE id = ?").run(provider, now, id);
   }
 
   updateSessionStatus(id: string, status: SessionRecord["status"]) {
     const now = new Date().toISOString();
-    this.db.prepare("UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?").run(status, now, id);
+    this.prepare("UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?").run(status, now, id);
   }
 
   deleteSession(id: string) {
-    this.db.prepare("DELETE FROM sessions WHERE id = ?").run(id);
+    this.prepare("DELETE FROM sessions WHERE id = ?").run(id);
   }
 
   // Message Operations
@@ -280,7 +291,7 @@ export class AppDatabase {
   }
 
   updateMessageContent(sessionId: string, messageId: string, content: string): void {
-    this.db.prepare("UPDATE messages SET content = ? WHERE session_id = ? AND id = ?").run(content, sessionId, messageId);
+    this.prepare("UPDATE messages SET content = ? WHERE session_id = ? AND id = ?").run(content, sessionId, messageId);
   }
 
   // Truncate all messages and events strictly AFTER a specific message ID
@@ -296,11 +307,11 @@ export class AppDatabase {
         .get(sessionId, `%"id":"${messageId}"%`) as { id: number } | undefined;
 
       this.db.transaction(() => {
-        this.db.prepare("DELETE FROM messages WHERE session_id = ? AND rowid > ?").run(sessionId, targetMsg.rowid);
+        this.prepare("DELETE FROM messages WHERE session_id = ? AND rowid > ?").run(sessionId, targetMsg.rowid);
         if (targetEvent) {
-          this.db.prepare("DELETE FROM events WHERE session_id = ? AND id > ?").run(sessionId, targetEvent.id);
+          this.prepare("DELETE FROM events WHERE session_id = ? AND id > ?").run(sessionId, targetEvent.id);
         } else {
-          this.db.prepare("DELETE FROM events WHERE session_id = ? AND created_at >= ?").run(sessionId, targetMsg.created_at);
+          this.prepare("DELETE FROM events WHERE session_id = ? AND created_at >= ?").run(sessionId, targetMsg.created_at);
         }
       })();
     }
@@ -310,10 +321,21 @@ export class AppDatabase {
   appendEvent(sessionId: string, type: string, payload: any): number {
     const now = new Date().toISOString();
     const payloadStr = typeof payload === "string" ? payload : JSON.stringify(payload);
-    const info = this.db
-      .prepare("INSERT INTO events (session_id, type, payload, created_at) VALUES (?, ?, ?, ?)")
-      .run(sessionId, type, payloadStr, now);
-    return Number(info.lastInsertRowid);
+    const info = this.prepare("INSERT INTO events (session_id, type, payload, created_at) VALUES (?, ?, ?, ?)").run(
+      sessionId,
+      type,
+      payloadStr,
+      now
+    );
+    const id = Number(info.lastInsertRowid);
+    eventBus.publish(sessionId, {
+      id,
+      session_id: sessionId,
+      type,
+      payload: payloadStr,
+      created_at: now,
+    });
+    return id;
   }
 
   getEvents(sessionId: string, afterId: number = 0): EventRecord[] {
@@ -349,7 +371,7 @@ export class AppDatabase {
 
   pruneToolOutputs(): number {
     const cutoff = new Date(Date.now() - CONFIG.TOOL_OUTPUT_MAX_AGE_DAYS * 86400_000).toISOString();
-    const byAge = this.db.prepare("DELETE FROM tool_outputs WHERE created_at < ?").run(cutoff);
+    const byAge = this.prepare("DELETE FROM tool_outputs WHERE created_at < ?").run(cutoff);
     const byCount = this.db
       .prepare(
         `DELETE FROM tool_outputs WHERE id IN (
@@ -390,13 +412,13 @@ export class AppDatabase {
   claimAttachments(messageId: string, sessionId: string, ids: string[]): AttachmentRecord[] {
     const rows = this.getUnclaimedAttachments(sessionId, ids);
     for (const r of rows) {
-      this.db.prepare("UPDATE attachments SET message_id = ? WHERE id = ? AND session_id = ?").run(messageId, r.id, sessionId);
+      this.prepare("UPDATE attachments SET message_id = ? WHERE id = ? AND session_id = ?").run(messageId, r.id, sessionId);
     }
     return rows;
   }
 
   getMessageAttachments(messageId: string): AttachmentRecord[] {
-    return this.db.prepare("SELECT * FROM attachments WHERE message_id = ? ORDER BY created_at ASC").all(messageId) as AttachmentRecord[];
+    return this.prepare("SELECT * FROM attachments WHERE message_id = ? ORDER BY created_at ASC").all(messageId) as AttachmentRecord[];
   }
 
   getToolUsage(sessionId: string): {
@@ -434,12 +456,12 @@ export class AppDatabase {
   }
 
   listProviders(): ProviderRecord[] {
-    const rows = this.db.prepare("SELECT * FROM providers ORDER BY sort_order ASC, created_at ASC").all() as any[];
+    const rows = this.prepare("SELECT * FROM providers ORDER BY sort_order ASC, created_at ASC").all() as any[];
     return rows.map((r) => this.parseProvider(r));
   }
 
   getProvider(id: string): ProviderRecord | undefined {
-    const row = this.db.prepare("SELECT * FROM providers WHERE id = ?").get(id) as any;
+    const row = this.prepare("SELECT * FROM providers WHERE id = ?").get(id) as any;
     return row ? this.parseProvider(row) : undefined;
   }
 
@@ -462,20 +484,39 @@ export class AppDatabase {
   }
 
   deleteProvider(id: string): void {
-    this.db.prepare("DELETE FROM providers WHERE id = ?").run(id);
+    this.prepare("DELETE FROM providers WHERE id = ?").run(id);
   }
 
   // Settings kv — small app-level preferences (default provider/model).
   getSetting(key: string): string | null {
-    const row = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+    const row = this.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
     return row?.value ?? null;
   }
 
   setSetting(key: string, value: string): void {
-    this.db
-      .prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-      .run(key, value);
+    this.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(
+      key,
+      value
+    );
+  }
+
+  close(): void {
+    try {
+      this.stmtCache.clear();
+      if (this.db.open) {
+        this.db.close();
+      }
+    } catch {}
   }
 }
 
 export const db = new AppDatabase();
+
+process.on("SIGINT", () => {
+  db.close();
+  process.exit(0);
+});
+process.on("SIGTERM", () => {
+  db.close();
+  process.exit(0);
+});

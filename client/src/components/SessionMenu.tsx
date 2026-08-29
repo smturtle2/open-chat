@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
-import { MoreVertical, Pencil, Trash2 } from "lucide-react";
+import { MoreVertical, Pencil, Trash2, Download } from "lucide-react";
 import { useChatStore } from "../store/useChatStore";
 
-/** Top-right kebab menu for the active session: rename + delete. */
+/** Top-right kebab menu for the active session: rename + export + delete. */
 export const SessionMenu: React.FC = () => {
-  const { sessions, currentSessionId, renameSession, deleteSession } = useChatStore();
+  const { sessions, currentSessionId, renameSession, deleteSession, messages } = useChatStore();
   const [open, setOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [title, setTitle] = useState("");
@@ -41,6 +41,28 @@ export const SessionMenu: React.FC = () => {
     setRenaming(false);
   };
 
+  const exportMarkdown = () => {
+    let md = `# ${session.title}\n*Exported from OpenChat on ${new Date().toLocaleString()}*\n\n---\n\n`;
+    for (const m of messages) {
+      if (m.role === "user") {
+        md += `### 👤 User\n\n${m.content}\n\n`;
+      } else if (m.role === "assistant") {
+        if (m.thought) {
+          md += `> **Thinking**:\n> ${m.thought.replace(/\n/g, "\n> ")}\n\n`;
+        }
+        md += `### 🤖 OpenChat\n\n${m.content}\n\n`;
+      }
+    }
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${session.title.replace(/[^a-zA-Z0-9가-힣_-]/g, "_")}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setOpen(false);
+  };
+
   return (
     <>
       <div ref={rootRef} className="relative">
@@ -56,7 +78,7 @@ export const SessionMenu: React.FC = () => {
         {open && (
           <div
             data-session-menu
-            className="absolute right-0 top-full mt-1.5 w-36 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-[#1a1a1c] shadow-lg shadow-black/5 py-1 z-50"
+            className="absolute right-0 top-full mt-1.5 w-40 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-[#1a1a1c] shadow-lg shadow-black/5 py-1 z-50"
           >
             <button
               onClick={() => {
@@ -70,11 +92,18 @@ export const SessionMenu: React.FC = () => {
               이름 변경
             </button>
             <button
+              onClick={exportMarkdown}
+              className="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 text-zinc-400" />
+              대화 내보내기 (.md)
+            </button>
+            <button
               onClick={() => {
                 setOpen(false);
                 deleteSession(session.id);
               }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-colors cursor-pointer"
+              className="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-colors cursor-pointer border-t border-zinc-100 dark:border-zinc-800/60 mt-1"
             >
               <Trash2 className="w-3.5 h-3.5" />
               삭제
