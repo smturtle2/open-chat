@@ -107,7 +107,12 @@ export function buildRequestBody(protocol: ProtocolType, opts: BuildRequestOptio
     }
 
     if (tools && tools.length > 0) {
-      body.tools = tools;
+      body.tools = tools.map((t) => ({
+        type: "function",
+        name: t.function.name,
+        description: t.function.description,
+        parameters: t.function.parameters,
+      }));
     }
 
     return body;

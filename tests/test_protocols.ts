@@ -51,6 +51,7 @@ async function main() {
   check("responses body has instructions", responsesBody.instructions === "You are a helpful assistant.");
   check("responses body separates input from system", responsesBody.input.length === 1 && responsesBody.input[0].role === "user");
   check("responses body includes tools", responsesBody.tools?.length > 0);
+  check("responses tools have top-level name", responsesBody.tools?.[0]?.name !== undefined && responsesBody.tools?.[0]?.parameters !== undefined);
   check("responses body has stream", responsesBody.stream === true);
 
   // 3-2. anthropic-messages request body
