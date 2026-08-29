@@ -74,15 +74,7 @@ fi
 # 3. Determine target directory
 echo -e "\n${BOLD}[3/6] Setting up OpenChat repository...${NC}"
 
-TARGET_DIR="${OPENCHAT_DIR:-}"
-
-if [ -z "$TARGET_DIR" ]; then
-  if [ -f "package.json" ] && grep -q '"name": "openchat"' "package.json" 2>/dev/null; then
-    TARGET_DIR="$(pwd)"
-  else
-    TARGET_DIR="$HOME/.openchat/app"
-  fi
-fi
+TARGET_DIR="${OPENCHAT_DIR:-$HOME/.openchat/app}"
 
 if [ -d "$TARGET_DIR/.git" ]; then
   echo -e "  ${BLUE}ℹ Existing installation found at: $TARGET_DIR${NC}"
@@ -94,13 +86,13 @@ if [ -d "$TARGET_DIR/.git" ]; then
     cp .env /tmp/.openchat.env.bak 2>/dev/null || true
   fi
 
-  git fetch origin main >/dev/null 2>&1 || true
-  git reset --hard origin/main >/dev/null 2>&1 || git pull origin main >/dev/null 2>&1 || true
-  git clean -fd -e .env -e .venv >/dev/null 2>&1 || true
+  git fetch origin main
+  git checkout -B main origin/main
+  git reset --hard origin/main
+  git clean -fd -e .env -e .venv
 
-  if [ -f "/tmp/.openchat.env.bak" ] && [ ! -f ".env" ]; then
-    mv /tmp/.openchat.env.bak .env 2>/dev/null || true
-  else
+  if [ -f "/tmp/.openchat.env.bak" ]; then
+    cp /tmp/.openchat.env.bak .env 2>/dev/null || true
     rm -f /tmp/.openchat.env.bak 2>/dev/null || true
   fi
 
