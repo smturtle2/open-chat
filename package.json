@@ -9,8 +9,8 @@
     "start": "node --import=tsx src/index.ts",
     "build": "npm --prefix client install && npm --prefix client run build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import=tsx tests/test_units.ts && node --import=tsx tests/test_context.ts && node --import=tsx tests/test_new_tools.ts && node --import=tsx tests/test_workspace_retention.ts",
-    "test:unit": "node --import=tsx tests/test_units.ts && node --import=tsx tests/test_context.ts && node --import=tsx tests/test_new_tools.ts && node --import=tsx tests/test_workspace_retention.ts",
+    "test": "node --import=tsx tests/test_units.ts && node --import=tsx tests/test_context.ts && node --import=tsx tests/test_new_tools.ts && node --import=tsx tests/test_workspace_retention.ts && node --import=tsx tests/test_protocols.ts",
+    "test:unit": "node --import=tsx tests/test_units.ts && node --import=tsx tests/test_context.ts && node --import=tsx tests/test_new_tools.ts && node --import=tsx tests/test_workspace_retention.ts && node --import=tsx tests/test_protocols.ts",
     "test:e2e": "node tests/test_step_sheet.js && node tests/test_working_indicator.js"
   },
   "dependencies": {

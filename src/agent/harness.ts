@@ -2,13 +2,13 @@ import path from "node:path";
 import fs from "node:fs";
 import { CONFIG } from "../config.js";
 import { db } from "../db/database.js";
-import { tools, type ToolContext } from "./tools.js";
+import { tools, type ToolContext, serializeObservation } from "./tools.js";
 import { extractJsonObjects, parseToolArguments } from "./jsonUtils.js";
 import { buildHistory } from "./context.js";
-import { serializeObservation } from "./tools.js";
 import { resolveEndpoint } from "./providers.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { chatWorkspaceDir, sessionRoot } from "./sessionPaths.js";
+import { getEndpointUrl, buildRequestBody, parseStreamData } from "./protocols.js";
 
 type StreamingToolCall = {
   id: string;
@@ -135,23 +135,32 @@ export class AgentHarness {
       let response: Response | null = null;
       let attempt = 0;
 
+      const targetUrl = getEndpointUrl(endpoint.baseUrl, endpoint.protocol);
+      const requestBody = buildRequestBody(endpoint.protocol, {
+        model: endpoint.model,
+        messages: messagesForApi,
+        tools: tools.getSchemas(session.mode),
+        stream: true,
+      });
+
+      const requestHeaders: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${endpoint.apiKey}`,
+      };
+
+      if (endpoint.protocol === "anthropic-messages") {
+        requestHeaders["x-api-key"] = endpoint.apiKey;
+        requestHeaders["anthropic-version"] = "2023-06-01";
+      }
+
       // Retry mechanism with exponential backoff for network/API resilience
       while (attempt < 3) {
         attempt++;
         try {
-          response = await fetch(`${endpoint.baseUrl}/chat/completions`, {
+          response = await fetch(targetUrl, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${endpoint.apiKey}`,
-            },
-            body: JSON.stringify({
-              model: endpoint.model,
-              messages: messagesForApi,
-              tools: tools.getSchemas(session.mode),
-              tool_choice: "auto",
-              stream: true,
-            }),
+            headers: requestHeaders,
+            body: JSON.stringify(requestBody),
             signal,
           });
 
@@ -206,25 +215,18 @@ export class AgentHarness {
             if (dataStr === "[DONE]") break;
 
             try {
-              const chunk = JSON.parse(dataStr);
-              const choice = chunk.choices?.[0];
-              if (!choice) continue;
+              const event = parseStreamData(endpoint.protocol, dataStr);
+              if (!event) continue;
 
-              const delta = choice.delta;
-              if (!delta) continue;
+              if (event.done) break;
 
-              // 1. Dedicated thinking delta (reasoning_content / reasoning / thought / thinking variants)
-              const reasoningDelta =
-                (typeof delta.reasoning_content === "string" ? delta.reasoning_content : "") ||
-                (typeof delta.reasoning === "string" ? delta.reasoning : "") ||
-                (typeof delta.thought === "string" ? delta.thought : "") ||
-                (typeof delta.thinking === "string" ? delta.thinking : "");
-              if (reasoningDelta) {
-                queueThoughtDelta(reasoningDelta);
+              // 1. Dedicated thinking delta
+              if (event.thought) {
+                queueThoughtDelta(event.thought);
               }
 
               // 2. Content delta with split-tag safe <think> parser
-              const rawContent = delta.content || "";
+              const rawContent = event.content || "";
               if (rawContent) {
                 tagBuffer += rawContent;
 
@@ -294,63 +296,54 @@ export class AgentHarness {
               }
 
               // 3. Tool Calls delta - Strict ID & Index Pointer Isolation
-              if (delta.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  // Track every distinct function name in arrival order (consecutive
-                  // duplicates from re-sending gateways are collapsed). Used to
-                  // reconstruct names when parallel calls get demuxed later.
-                  if (tc.function?.name && toolNameSequence[toolNameSequence.length - 1] !== tc.function.name) {
-                    toolNameSequence.push(tc.function.name);
-                  }
+              if (event.toolCall) {
+                const tc = event.toolCall;
+                if (tc.name && toolNameSequence[toolNameSequence.length - 1] !== tc.name) {
+                  toolNameSequence.push(tc.name);
+                }
 
-                  let currentTool: StreamingToolCall | undefined;
+                let currentTool: StreamingToolCall | undefined;
 
-                  if (tc.id) {
-                    const existingIdx = toolCallsList.findIndex((t) => t.id === tc.id);
-                    if (existingIdx === -1) {
-                      // Arguments start empty; the shared append below adds
-                      // them exactly once whether they arrived whole in this
-                      // delta or will be streamed across subsequent ones.
-                      toolCallsList.push({
-                        id: tc.id,
-                        name: tc.function?.name || "",
-                        arguments: "",
-                      });
-                      activeToolIndex = toolCallsList.length - 1;
-                    } else {
-                      activeToolIndex = existingIdx;
-                    }
-                    currentTool = toolCallsList[activeToolIndex];
-                  } else if (typeof tc.index === "number") {
-                    activeToolIndex = tc.index;
-                    if (!toolCallsList[activeToolIndex]) {
-                      toolCallsList[activeToolIndex] = {
-                        id: generateCallId(),
-                        name: tc.function?.name || "",
-                        arguments: "",
-                      };
-                    }
-                    currentTool = toolCallsList[activeToolIndex];
+                if (tc.id) {
+                  const existingIdx = toolCallsList.findIndex((t) => t.id === tc.id);
+                  if (existingIdx === -1) {
+                    toolCallsList.push({
+                      id: tc.id,
+                      name: tc.name || "",
+                      arguments: "",
+                    });
+                    activeToolIndex = toolCallsList.length - 1;
                   } else {
-                    // No id and no index: continuation of the most recent call.
-                    currentTool = toolCallsList[activeToolIndex] || toolCallsList[toolCallsList.length - 1];
+                    activeToolIndex = existingIdx;
                   }
+                  currentTool = toolCallsList[activeToolIndex];
+                } else if (typeof tc.index === "number") {
+                  activeToolIndex = tc.index;
+                  if (!toolCallsList[activeToolIndex]) {
+                    toolCallsList[activeToolIndex] = {
+                      id: generateCallId(),
+                      name: tc.name || "",
+                      arguments: "",
+                    };
+                  }
+                  currentTool = toolCallsList[activeToolIndex];
+                } else {
+                  currentTool = toolCallsList[activeToolIndex] || toolCallsList[toolCallsList.length - 1];
+                }
 
-                  if (currentTool) {
-                    // Flush argument chunks that arrived before any call was identifiable.
-                    if (orphanArgBuffer) {
-                      currentTool.arguments += orphanArgBuffer;
-                      orphanArgBuffer = "";
-                    }
-                    if (tc.function?.name && !currentTool.name) {
-                      currentTool.name = tc.function.name;
-                    }
-                    if (tc.function?.arguments) {
-                      currentTool.arguments += tc.function.arguments;
-                    }
-                  } else if (tc.function?.arguments) {
-                    orphanArgBuffer += tc.function.arguments;
+                if (currentTool) {
+                  if (orphanArgBuffer) {
+                    currentTool.arguments += orphanArgBuffer;
+                    orphanArgBuffer = "";
                   }
+                  if (tc.name && !currentTool.name) {
+                    currentTool.name = tc.name;
+                  }
+                  if (tc.argumentsDelta) {
+                    currentTool.arguments += tc.argumentsDelta;
+                  }
+                } else if (tc.argumentsDelta) {
+                  orphanArgBuffer += tc.argumentsDelta;
                 }
               }
             } catch {}

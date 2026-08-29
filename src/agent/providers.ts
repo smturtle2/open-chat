@@ -12,11 +12,14 @@ import { db, type ProviderModel, type ProviderRecord } from "../db/database.js";
 // with an empty providers table, the legacy LLM_BASE_URL/LLM_API_KEY/LLM_MODEL
 // environment values become the "opencode" provider.
 
+import { resolveProtocol, type ProtocolType } from "./protocols.js";
+
 export interface ResolvedEndpoint {
   baseUrl: string;
   apiKey: string;
   model: string;
   providerId: string | null;
+  protocol: ProtocolType;
 }
 
 export interface ProviderPreset {
@@ -198,7 +201,13 @@ export function resolveEndpoint(opts: { provider?: string | null; model?: string
     if (!provider || !provider.enabled || !provider.api_key) continue;
     const model = cand.model || pickDefaultModel(provider);
     if (!model) continue;
-    return { baseUrl: provider.base_url, apiKey: provider.api_key, model, providerId: provider.id };
+    return {
+      baseUrl: provider.base_url,
+      apiKey: provider.api_key,
+      model,
+      providerId: provider.id,
+      protocol: resolveProtocol(provider.base_url, model),
+    };
   }
 
   // Last resort: first enabled keyed provider.
@@ -206,15 +215,23 @@ export function resolveEndpoint(opts: { provider?: string | null; model?: string
     if (!provider.enabled || !provider.api_key) continue;
     const model = opts.model || defaults.default_model || pickDefaultModel(provider);
     if (!model) continue;
-    return { baseUrl: provider.base_url, apiKey: provider.api_key, model, providerId: provider.id };
+    return {
+      baseUrl: provider.base_url,
+      apiKey: provider.api_key,
+      model,
+      providerId: provider.id,
+      protocol: resolveProtocol(provider.base_url, model),
+    };
   }
 
   // Legacy env fallback (pre-providers behavior).
+  const fallbackModel = opts.model || CONFIG.LLM_MODEL;
   return {
     baseUrl: CONFIG.LLM_BASE_URL,
     apiKey: CONFIG.LLM_API_KEY,
-    model: opts.model || CONFIG.LLM_MODEL,
+    model: fallbackModel,
     providerId: null,
+    protocol: resolveProtocol(CONFIG.LLM_BASE_URL, fallbackModel),
   };
 }
 
