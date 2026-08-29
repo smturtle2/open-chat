@@ -115,6 +115,9 @@ const ProvidersSection: React.FC = () => {
       ...prev,
       [p.id]: res.ok ? `연결 성공${res.model_count !== undefined ? ` · ${res.model_count}개 모델` : ""}` : `실패: ${res.error}`,
     }));
+    if (res.ok) {
+      await fetchProviders();
+    }
     setTestingId(null);
   };
 
@@ -244,7 +247,8 @@ const ProviderEditor: React.FC<{ draft: ProviderDraft; onDone: () => void }> = (
 
   const isEditing = !!form.id;
   const isCustom = form.preset === "custom";
-  const canSave = (isCustom ? form.name.trim() && form.base_url.trim() : true) && (isEditing || form.api_key.trim());
+  const isLocal = form.base_url.includes("localhost") || form.base_url.includes("127.0.0.1") || form.base_url.includes("0.0.0.0");
+  const canSave = (isCustom ? form.name.trim() && form.base_url.trim() : true) && (isEditing || isLocal || form.api_key.trim());
 
   const inputCls =
     "w-full bg-zinc-50 dark:bg-zinc-900 text-sm text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-700 outline-none focus:border-zinc-400 dark:focus:border-zinc-500";

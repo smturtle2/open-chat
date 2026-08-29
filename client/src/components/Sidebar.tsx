@@ -137,8 +137,8 @@ export const Sidebar: React.FC = () => {
 
       const target = e.target as HTMLElement;
       // Opening lives over fully-selectable chat content: touch pointers
-      // only, so mouse text-selection is never hijacked.
-      if (!openRef.current && e.pointerType !== "touch") return;
+      // Restrict all gesture interception to touch pointers
+      if (e.pointerType !== "touch") return;
       // vaul rule: never steal a gesture while text is selected.
       if (window.getSelection()?.toString()) return;
       if (noDragTarget(target)) return;
@@ -146,7 +146,7 @@ export const Sidebar: React.FC = () => {
       const rowEl = target.closest?.("[data-row]") as HTMLElement | null;
       g = {
         id: e.pointerId,
-        touch: e.pointerType === "touch",
+        touch: true,
         x0: e.clientX,
         y0: e.clientY,
         axis: "?",
@@ -156,7 +156,7 @@ export const Sidebar: React.FC = () => {
         samples: [{ t: performance.now(), x: e.clientX }],
       };
 
-      // Long-press exposes a row's actions (~500ms with 10px tolerance).
+      // Long-press exposes a row's actions (~500ms with 10px tolerance) on touch only.
       if (openRef.current && g.row) {
         const id = g.row;
         lpTimer = setTimeout(() => {
@@ -433,9 +433,12 @@ export const Sidebar: React.FC = () => {
     </div>
   );
 
-  const filteredSessions = sessions.filter((s) =>
-    s.title.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredSessions = sessions.filter(
+    (s) =>
+      (s.title?.toLowerCase() ?? "").includes(searchQuery.toLowerCase()) ||
+      (s.workdir && s.workdir.toLowerCase().includes(searchQuery.toLowerCase()))
   );
+
   const agentSessions = filteredSessions.filter((s) => s.mode === "agent");
   const chatSessions = filteredSessions.filter((s) => s.mode !== "agent");
 
@@ -458,7 +461,7 @@ export const Sidebar: React.FC = () => {
         ref={asideRef}
         style={{ transition: PANEL_EASE, touchAction: "pan-y" }}
         className={`fixed md:static inset-y-0 left-0 z-40 w-[240px] bg-[#f9f9fb] dark:bg-[#141416] border-r border-zinc-200/70 dark:border-zinc-800 flex flex-col ${
-          sidebarOpen ? "translate-x-0" : "-translate-x-full md:-translate-x-full md:w-0 md:border-none"
+          sidebarOpen ? "translate-x-0" : "-translate-x-full md:-translate-x-full md:w-0 md:border-none overflow-hidden"
         }`}
       >
         {/* Top Header */}

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { X, Copy, Download, Code, Eye, ExternalLink, Check, Sparkles } from "lucide-react";
+import DOMPurify from "dompurify";
 import { useChatStore } from "../store/useChatStore";
 import { MarkdownView } from "./MarkdownView";
 
@@ -22,6 +23,7 @@ export const ArtifactViewer: React.FC = () => {
     else if (activeArtifact.type === "svg") extension = ".svg";
     else if (activeArtifact.type === "markdown") extension = ".md";
     else if (activeArtifact.type === "react") extension = ".tsx";
+    else if (activeArtifact.type === "mermaid") extension = ".mmd";
     else if (activeArtifact.language) extension = `.${activeArtifact.language}`;
 
     const filename = activeArtifact.title
@@ -44,10 +46,11 @@ export const ArtifactViewer: React.FC = () => {
       });
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
     }
   };
 
-  const isPreviewable = ["html", "svg", "markdown"].includes(activeArtifact.type);
+  const isPreviewable = ["html", "svg", "markdown", "mermaid", "react"].includes(activeArtifact.type);
 
   return (
     <div className="h-full flex flex-col bg-white dark:bg-[#18181b] border-l border-zinc-200 dark:border-zinc-800 shadow-2xl z-20 overflow-hidden">
@@ -140,12 +143,20 @@ export const ArtifactViewer: React.FC = () => {
           ) : activeArtifact.type === "svg" ? (
             <div
               className="w-full h-full flex items-center justify-center p-6 bg-zinc-100 dark:bg-zinc-900/60 overflow-auto"
-              dangerouslySetInnerHTML={{ __html: activeArtifact.content }}
+              dangerouslySetInnerHTML={{
+                __html: DOMPurify.sanitize(activeArtifact.content, { USE_PROFILES: { svg: true, svgFilters: true } }),
+              }}
             />
+          ) : activeArtifact.type === "mermaid" ? (
+            <div className="p-6 max-w-3xl mx-auto">
+              <div className="p-4 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-xs font-mono text-zinc-800 dark:text-zinc-200">
+                <MarkdownView content={`\`\`\`mermaid\n${activeArtifact.content}\n\`\`\``} />
+              </div>
+            </div>
           ) : (
             <iframe
               srcDoc={activeArtifact.content}
-              sandbox="allow-scripts allow-modals allow-same-origin"
+              sandbox="allow-scripts allow-modals"
               className="w-full h-full border-0 bg-white"
               title="Live Artifact Preview"
             />

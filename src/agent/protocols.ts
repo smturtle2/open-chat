@@ -11,6 +11,12 @@ export interface NormalizedStreamEvent {
     name?: string;
     argumentsDelta?: string;
   };
+  toolCalls?: Array<{
+    index?: number;
+    id?: string;
+    name?: string;
+    argumentsDelta?: string;
+  }>;
   done?: boolean;
 }
 
@@ -147,17 +153,22 @@ export function buildRequestBody(protocol: ProtocolType, opts: BuildRequestOptio
       if (msg.role === "system") {
         system = system ? `${system}\n\n${msg.content}` : `${msg.content}`;
       } else if (msg.role === "tool") {
-        // Anthropic tool result format inside user turn
-        formattedMessages.push({
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: msg.tool_call_id,
-              content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
-            },
-          ],
-        });
+        const toolResultPart = {
+          type: "tool_result",
+          tool_use_id: msg.tool_call_id,
+          content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+        };
+
+        // Merge into preceding user message if it was also a tool result container
+        const lastMsg = formattedMessages[formattedMessages.length - 1];
+        if (lastMsg && lastMsg.role === "user" && Array.isArray(lastMsg.content) && lastMsg.content[0]?.type === "tool_result") {
+          lastMsg.content.push(toolResultPart);
+        } else {
+          formattedMessages.push({
+            role: "user",
+            content: [toolResultPart],
+          });
+        }
       } else if (msg.role === "assistant" && msg.tool_calls?.length > 0) {
         const contentParts: any[] = [];
         if (msg.content) {
@@ -357,13 +368,14 @@ function parseOpenAIChatDelta(choice: any): NormalizedStreamEvent | null {
 
   // Tool calls
   if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
-    const tc = delta.tool_calls[0];
-    event.toolCall = {
-      index: tc.index ?? 0,
+    const mappedCalls = delta.tool_calls.map((tc: any, i: number) => ({
+      index: tc.index ?? i,
       id: tc.id,
       name: tc.function?.name,
       argumentsDelta: tc.function?.arguments || "",
-    };
+    }));
+    event.toolCalls = mappedCalls;
+    event.toolCall = mappedCalls[0];
   }
 
   if (choice.finish_reason) {

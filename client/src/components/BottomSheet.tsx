@@ -75,7 +75,7 @@ export const BottomSheet: React.FC<BottomSheetProps> = ({ onClose, children }) =
         className={`absolute inset-x-0 bottom-0 ${dragY === null && !closing ? "animate-panel-up" : ""}`}
         style={{ transform, transition }}
       >
-        <div className="mx-auto max-w-3xl bg-white dark:bg-zinc-900 rounded-t-2xl border border-b-0 border-zinc-200 dark:border-zinc-700 shadow-2xl overflow-hidden">
+        <div className="mx-auto max-w-3xl bg-white dark:bg-zinc-900 rounded-t-2xl border border-b-0 border-zinc-200 dark:border-zinc-700 shadow-2xl overflow-hidden max-h-[85dvh] flex flex-col pb-[max(0.5rem,env(safe-area-inset-bottom))]">
           {/* Grab zone — swipe down / tap to dismiss */}
           <div
             role="button"

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useChatStore } from "./useChatStore";
 
 // Settings-domain state: app preferences + provider CRUD. Kept separate from
 // useChatStore so conversation state stays untouched by configuration work.
@@ -106,6 +107,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         return { ok: false, error: err.error || "저장 실패" };
       }
       await get().fetchProviders();
+      useChatStore.getState().fetchModels().catch(() => {});
       return { ok: true };
     } catch (err: any) {
       return { ok: false, error: err?.message || "저장 실패" };
@@ -116,6 +118,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       await fetch(`/api/providers/${id}`, { method: "DELETE" });
       await get().fetchProviders();
+      useChatStore.getState().fetchModels().catch(() => {});
     } catch {}
   },
 

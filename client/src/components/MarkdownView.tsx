@@ -15,6 +15,10 @@ function escapeAttr(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
   const { currentSessionId } = useChatStore();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -22,34 +26,67 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
   const renderedHtml = useMemo(() => {
     if (!content) return "";
 
-    // 1. Math formulas rendering ($$...$$ and $...$)
-    let processed = content.replace(/\$\$([\s\S]+?)\$\$/g, (_, math) => {
+    // 1. Extract and protect code blocks & inline code so math parser never mangles them
+    const codeBlocks: string[] = [];
+    const inlineCodes: string[] = [];
+    const mathTokens: string[] = [];
+
+    let text = content;
+
+    // 1.1 Fenced code blocks
+    text = text.replace(/```[\s\S]*?```/g, (match) => {
+      const idx = codeBlocks.length;
+      codeBlocks.push(match);
+      return `@@OPENCHAT_CODE_BLOCK_${idx}@@`;
+    });
+
+    // 1.2 Inline code spans
+    text = text.replace(/`[^`\n]+?`/g, (match) => {
+      const idx = inlineCodes.length;
+      inlineCodes.push(match);
+      return `@@OPENCHAT_INLINE_CODE_${idx}@@`;
+    });
+
+    // 2. Render Math formulas safely
+    // 2.1 Block math ($$...$$)
+    text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, math) => {
+      const idx = mathTokens.length;
       try {
-        return `<div class="katex-display-block my-2 p-2 text-center overflow-x-auto bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200/80 dark:border-zinc-700/60 rounded-lg text-sm">${katex.renderToString(
+        const rendered = `<div class="katex-display-block my-2 p-2 text-center overflow-x-auto bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200/80 dark:border-zinc-700/60 rounded-lg text-sm">${katex.renderToString(
           math.trim(),
           { displayMode: true, throwOnError: false }
         )}</div>`;
+        mathTokens.push(rendered);
       } catch {
-        return `$$${math}$$`;
+        mathTokens.push(`$$${escapeHtml(math)}$$`);
+      }
+      return `@@OPENCHAT_MATH_TOKEN_${idx}@@`;
+    });
+
+    // 2.2 Inline math ($...$) - ignore numbers, spaces, or currency figures like $10 or $20
+    text = text.replace(/(^|[^\w\$])\$([^\$\n\s][^\$\n]*?[^\$\n\s]|\S)\$([^\w\$]|$)/g, (full, pre, math, post) => {
+      // Ignore plain dollar amounts
+      if (/^\s*\d+([.,]\d+)?\s*$/.test(math.trim()) || math.includes(" and ") || math.includes(" to ")) {
+        return full;
+      }
+      const idx = mathTokens.length;
+      try {
+        const rendered = katex.renderToString(math.trim(), { displayMode: false, throwOnError: false });
+        mathTokens.push(rendered);
+        return `${pre}@@OPENCHAT_MATH_TOKEN_${idx}@@${post}`;
+      } catch {
+        return full;
       }
     });
 
-    processed = processed.replace(/\$([^\$\n\s][^\$\n]*?[^\$\n\s]|\S)\$/g, (_, math) => {
-      // Ignore plain dollar amounts like $10 or $25.50
-      if (/^\d+(\.\d+)?$/.test(math.trim())) {
-        return `$${math}$`;
-      }
-      try {
-        return katex.renderToString(math.trim(), { displayMode: false, throwOnError: false });
-      } catch {
-        return `$${math}$`;
-      }
-    });
+    // Restore protected code blocks before marked runs
+    text = text.replace(/@@OPENCHAT_CODE_BLOCK_(\d+)@@/g, (_, i) => codeBlocks[parseInt(i, 10)]);
+    text = text.replace(/@@OPENCHAT_INLINE_CODE_(\d+)@@/g, (_, i) => inlineCodes[parseInt(i, 10)]);
 
     const renderer = new Renderer();
 
-    // 2. Clickable Links with automatic workspace file resolution
-    renderer.link = ({ href, title, text }: any) => {
+    // 3. Clickable Links with automatic workspace subpath resolution
+    renderer.link = ({ href, title, text: linkText }: any) => {
       let resolvedHref = href;
       if (
         !href.startsWith("http://") &&
@@ -59,16 +96,17 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
         !href.startsWith("/")
       ) {
         if (currentSessionId) {
-          resolvedHref = `/api/sessions/${currentSessionId}/files/${encodeURIComponent(href)}`;
+          const safePath = href.split("/").map((part: string) => encodeURIComponent(part)).join("/");
+          resolvedHref = `/api/sessions/${currentSessionId}/files/${safePath}`;
         }
       }
 
       const titleAttr = title ? ` title="${escapeAttr(String(title))}"` : "";
-      return `<a href="${escapeAttr(resolvedHref)}" target="_blank" rel="noopener noreferrer"${titleAttr} class="text-zinc-900 dark:text-zinc-100 font-medium underline underline-offset-4 decoration-zinc-400 dark:decoration-zinc-500 hover:decoration-zinc-900 dark:hover:decoration-zinc-100 transition-colors break-all cursor-pointer">${text}</a>`;
+      return `<a href="${escapeAttr(resolvedHref)}" target="_blank" rel="noopener noreferrer"${titleAttr} class="text-zinc-900 dark:text-zinc-100 font-medium underline underline-offset-4 decoration-zinc-400 dark:decoration-zinc-500 hover:decoration-zinc-900 dark:hover:decoration-zinc-100 transition-colors break-all cursor-pointer">${linkText}</a>`;
     };
 
-    // 2.1. Inline Image renderer for charts and diagrams
-    renderer.image = ({ href, title, text }: any) => {
+    // 3.1. Inline Image renderer for charts and diagrams
+    renderer.image = ({ href, title, text: imgText }: any) => {
       let resolvedHref = href;
       if (
         !href.startsWith("http://") &&
@@ -77,27 +115,28 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
         !href.startsWith("/")
       ) {
         if (currentSessionId) {
-          resolvedHref = `/api/sessions/${currentSessionId}/files/${encodeURIComponent(href)}`;
+          const safePath = href.split("/").map((part: string) => encodeURIComponent(part)).join("/");
+          resolvedHref = `/api/sessions/${currentSessionId}/files/${safePath}`;
         }
       }
       const titleAttr = title ? ` title="${escapeAttr(String(title))}"` : "";
-      const altAttr = text ? ` alt="${escapeAttr(String(text))}"` : ' alt="image"';
+      const altAttr = imgText ? ` alt="${escapeAttr(String(imgText))}"` : ' alt="image"';
       return `<div class="my-3"><a href="${escapeAttr(resolvedHref)}" target="_blank" rel="noreferrer" class="block group"><img src="${escapeAttr(resolvedHref)}"${altAttr}${titleAttr} class="max-h-96 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm hover:opacity-95 transition-opacity" loading="lazy" /></a></div>`;
     };
 
-    // 3. Syntax-highlighted code blocks with Copy & Open Artifact buttons
+    // 4. Syntax-highlighted code blocks with Copy & Open Artifact buttons
     renderer.code = (token: any) => {
-      const text = token.text || "";
+      const textVal = token.text || "";
       const lang = token.lang || "plaintext";
       const language = lang && hljs.getLanguage(lang) ? lang : "plaintext";
-      let highlighted = text;
+      let highlighted = "";
       try {
-        highlighted = hljs.highlight(text, { language }).value;
+        highlighted = hljs.highlight(textVal, { language }).value;
       } catch {
-        highlighted = text;
+        highlighted = escapeHtml(textVal);
       }
 
-      const encodedCode = encodeURIComponent(text);
+      const encodedCode = encodeURIComponent(textVal);
       const isArtifactType = ["html", "svg", "jsx", "tsx", "react", "mermaid", "markdown", "javascript", "typescript", "python"].includes(lang.toLowerCase());
       let artifactKind = "code";
       if (lang.toLowerCase() === "html") artifactKind = "html";
@@ -140,10 +179,12 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
       `;
     };
 
-    const rawHtml = marked.parse(processed, { renderer, gfm: true, breaks: true }) as string;
+    let rawHtml = marked.parse(text, { renderer, gfm: true, breaks: true }) as string;
 
-    // Final gate: strip scripts/event handlers/javascript: URLs from model-
-    // or web-sourced HTML before it ever touches the DOM.
+    // Restore rendered math tokens into the HTML without marked mangle
+    rawHtml = rawHtml.replace(/@@OPENCHAT_MATH_TOKEN_(\d+)@@/g, (_, i) => mathTokens[parseInt(i, 10)] || "");
+
+    // Final gate: strip scripts/event handlers/javascript: URLs
     return DOMPurify.sanitize(rawHtml, {
       ADD_ATTR: ["data-code", "data-artifact-title", "data-artifact-type", "data-artifact-code", "target", "loading"],
       FORBID_TAGS: ["style", "form", "iframe"],

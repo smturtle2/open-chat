@@ -432,52 +432,93 @@ app.post("/api/sessions/:id/stop", (c) => {
 // SSE: Real-Time Event Stream
 app.get("/api/sessions/:id/events", (c) => {
   const id = c.req.param("id");
+  const lastEventHeader = c.req.header("last-event-id");
   const afterParam = c.req.query("after");
-  const lastEventId = afterParam ? parseInt(afterParam, 10) : 0;
+  const rawId = lastEventHeader || afterParam;
+  const lastEventId = rawId ? parseInt(rawId, 10) : 0;
 
   return streamSSE(c, async (stream) => {
     let currentId = isNaN(lastEventId) ? 0 : lastEventId;
     let isActive = true;
 
-    // 1. Flush unread historical events on reconnect
-    const initialEvents = db.getEvents(id, currentId);
-    for (const event of initialEvents) {
-      await stream.writeSSE({
-        event: event.type,
-        data: event.payload,
-        id: String(event.id),
-      });
-      currentId = event.id!;
-    }
-
-    // 2. Real-time event push via in-memory EventBus (0ms latency, zero DB polling)
-    const unsubscribe = eventBus.subscribe(id, async (event) => {
+    // Serialize all SSE writes through a promise chain to prevent chunk interleaving
+    let writeChain: Promise<void> = Promise.resolve();
+    const enqueueWrite = (data: { event: string; data: string; id?: string }) => {
       if (!isActive) return;
-      try {
-        await stream.writeSSE({
+      writeChain = writeChain
+        .then(async () => {
+          if (!isActive) return;
+          await stream.writeSSE(data);
+        })
+        .catch(() => {});
+    };
+
+    // 1. Subscribe to real-time events first so no events during initial DB fetch are lost
+    const liveQueue: any[] = [];
+    let historyDone = false;
+
+    const unsubscribe = eventBus.subscribe(id, (event) => {
+      if (!isActive) return;
+      if (!historyDone) {
+        liveQueue.push(event);
+      } else if (event.id && event.id > currentId) {
+        currentId = event.id;
+        enqueueWrite({
           event: event.type,
           data: event.payload,
           id: String(event.id),
         });
-      } catch {}
+      }
     });
 
-    // 3. Keep-alive ping (every 25s) to keep connections alive across proxies
-    const pingTimer = setInterval(async () => {
-      if (!isActive) return;
-      try {
-        await stream.writeSSE({ event: "ping", data: "{}" });
-      } catch {}
+    // 2. Flush unread historical events on connect/reconnect
+    const initialEvents = db.getEvents(id, currentId);
+    for (const event of initialEvents) {
+      if (event.id && event.id > currentId) {
+        currentId = event.id;
+      }
+      enqueueWrite({
+        event: event.type,
+        data: event.payload,
+        id: String(event.id),
+      });
+    }
+
+    // 3. Process buffered live events that arrived during history fetching
+    historyDone = true;
+    for (const event of liveQueue) {
+      if (event.id && event.id > currentId) {
+        currentId = event.id;
+        enqueueWrite({
+          event: event.type,
+          data: event.payload,
+          id: String(event.id),
+        });
+      }
+    }
+    liveQueue.length = 0;
+
+    // 4. Keep-alive ping (every 25s) to keep connections alive across proxies
+    const pingTimer = setInterval(() => {
+      enqueueWrite({ event: "ping", data: "{}" });
     }, 25000);
 
-    stream.onAbort(() => {
+    const cleanup = () => {
+      if (!isActive) return;
       isActive = false;
       unsubscribe();
       clearInterval(pingTimer);
-    });
+    };
 
-    // Hold connection open
-    await new Promise<void>((resolve) => stream.onAbort(resolve));
+    stream.onAbort(cleanup);
+
+    // Hold connection open until client disconnects
+    await new Promise<void>((resolve) => {
+      stream.onAbort(() => {
+        cleanup();
+        resolve();
+      });
+    });
   });
 });
 

@@ -153,7 +153,10 @@ export function updateProvider(id: string, input: ProviderInput): ProviderRecord
 
 export function deleteProvider(id: string): boolean {
   const existed = !!db.getProvider(id);
-  if (existed) db.deleteProvider(id);
+  if (existed) {
+    db.deleteProvider(id);
+    modelMemory.delete(id);
+  }
   if (db.getSetting(DEFAULT_PROVIDER_KEY) === id) {
     db.setSetting(DEFAULT_PROVIDER_KEY, "");
     db.setSetting(DEFAULT_MODEL_KEY, "");
@@ -198,26 +201,33 @@ export function resolveEndpoint(opts: { provider?: string | null; model?: string
 
   for (const cand of candidates) {
     const provider = cand.providerId ? db.getProvider(cand.providerId) : undefined;
-    if (!provider || !provider.enabled || !provider.api_key) continue;
+    if (!provider || !provider.enabled) continue;
+    // For non-localhost endpoints, require an API key
+    const isLocal = provider.base_url.includes("localhost") || provider.base_url.includes("127.0.0.1") || provider.base_url.includes("0.0.0.0");
+    if (!provider.api_key && !isLocal) continue;
+
     const model = cand.model || pickDefaultModel(provider);
     if (!model) continue;
     return {
       baseUrl: provider.base_url,
-      apiKey: provider.api_key,
+      apiKey: provider.api_key || "none",
       model,
       providerId: provider.id,
       protocol: resolveProtocol(provider.base_url, model),
     };
   }
 
-  // Last resort: first enabled keyed provider.
+  // Last resort: first enabled provider.
   for (const provider of db.listProviders()) {
-    if (!provider.enabled || !provider.api_key) continue;
+    if (!provider.enabled) continue;
+    const isLocal = provider.base_url.includes("localhost") || provider.base_url.includes("127.0.0.1") || provider.base_url.includes("0.0.0.0");
+    if (!provider.api_key && !isLocal) continue;
+
     const model = opts.model || defaults.default_model || pickDefaultModel(provider);
     if (!model) continue;
     return {
       baseUrl: provider.base_url,
-      apiKey: provider.api_key,
+      apiKey: provider.api_key || "none",
       model,
       providerId: provider.id,
       protocol: resolveProtocol(provider.base_url, model),

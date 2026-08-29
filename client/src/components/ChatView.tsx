@@ -29,8 +29,6 @@ export const ChatView: React.FC = () => {
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
-  // Which steps group is open in the bottom sheet ("{turnKey}_g{ordinal}")
-  const [sheetKey, setSheetKey] = useState<string | null>(null);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
 
@@ -45,9 +43,6 @@ export const ChatView: React.FC = () => {
   // Re-attach to bottom when switching sessions
   useEffect(() => {
     stickToBottomRef.current = true;
-    setSheetKey(null);
-    liveSnapshotRef.current = null;
-    snapshotOwnerRef.current = null;
   }, [currentSessionId]);
 
   const isEmpty = messages.length === 0 && !isGenerating;
@@ -72,7 +67,7 @@ export const ChatView: React.FC = () => {
     let turnAssistantMsgs: Message[] = [];
 
     const flushTurn = () => {
-      if (!currentUserMsg) return;
+      if (!currentUserMsg && turnAssistantMsgs.length === 0) return;
       const segments: TurnSegment[] = [];
       let pendingEntries: StepEntry[] = [];
 
@@ -104,7 +99,11 @@ export const ChatView: React.FC = () => {
             }
           }
           const obs = toolObservations.map[tc.id];
-          pendingEntries.push({ item: { kind: "tool", id: tc.id, name, args, obs, imageUrl: toolObservations.imageUrls[tc.id] } });
+          const activeStatus = activeToolCalls.find((a) => a.id === tc.id)?.status;
+          pendingEntries.push({
+            item: { kind: "tool", id: tc.id, name, args, obs, imageUrl: toolObservations.imageUrls[tc.id] },
+            running: activeStatus === "running",
+          });
         }
 
         // If this assistant message contains text content, flush pending steps first
@@ -131,31 +130,16 @@ export const ChatView: React.FC = () => {
 
     flushTurn();
     return result;
-  }, [messages, toolObservations]);
-
-  // While generating, fold the in-flight thought/tools into ONE live steps
-  // group appended to the last turn's trailing steps group (deduped by tool
-  // id), so the generating iteration always shows as a single toggle. A
-  // snapshot keeps the group visible through silent gaps between rounds
-  // (thought cleared / tools already persisted).
-  const liveSnapshotRef = useRef<StepEntry[] | null>(null);
-  const snapshotOwnerRef = useRef<string | null>(null);
+  }, [messages, toolObservations, activeToolCalls]);
 
   const displayTurns: ConsolidatedTurn[] = React.useMemo(() => {
     if (!isGenerating || turns.length === 0) {
-      liveSnapshotRef.current = null;
       return turns;
     }
 
     const lastIdx = turns.length - 1;
     const last = turns[lastIdx];
     const segments = [...last.segments];
-
-    const ownerKey = last.userMsg?.id ?? "__live__";
-    if (snapshotOwnerRef.current !== ownerKey) {
-      snapshotOwnerRef.current = ownerKey;
-      liveSnapshotRef.current = null;
-    }
 
     const existingToolIds = new Set<string>();
     for (const seg of segments) {
@@ -177,11 +161,7 @@ export const ChatView: React.FC = () => {
       });
     }
 
-    if (liveEntries.length > 0) {
-      liveSnapshotRef.current = liveEntries.map((e) => ({ ...e }));
-    }
-    const shownEntries =
-      liveEntries.length > 0 ? liveEntries : liveSnapshotRef.current ?? [];
+    const shownEntries = liveEntries;
 
     if (shownEntries.length > 0) {
       const lastSeg = segments[segments.length - 1];
@@ -206,7 +186,7 @@ export const ChatView: React.FC = () => {
     if (el && stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [displayTurns, currentContent, isGenerating, sheetKey]);
+  }, [displayTurns, currentContent, isGenerating]);
 
   const [expandedSteps, setExpandedSteps] = useState<Record<string, boolean>>({});
 
@@ -436,7 +416,7 @@ export const ChatView: React.FC = () => {
 
                           {/* Working indicator: continuous through all
                               generation phases until prose starts streaming */}
-                          {showStreamTail && !currentContent && (
+                          {showStreamTail && !currentContent && !turn.segments.some((s) => s.type === "text") && (
                             <div className="flex items-center gap-1.5 py-1 px-0.5 text-zinc-400 dark:text-zinc-500 select-none">
                               <span className="typing-dot-wave" />
                               <span className="typing-dot-wave" />

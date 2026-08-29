@@ -277,6 +277,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentContent: "",
       activeToolCalls: [],
       isGenerating: false,
+      pendingAttachments: [],
     });
 
     try {
@@ -380,12 +381,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (content: string) => {
-    const { currentSessionId, pendingAttachments } = get();
+    const { currentSessionId, pendingAttachments, messages } = get();
     if (!currentSessionId || !content.trim()) return;
 
     const attachmentIds = pendingAttachments.map((a) => a.id).filter(Boolean) as string[];
+    const tempUserMsg: Message = {
+      id: `msg_user_${Date.now()}`,
+      session_id: currentSessionId,
+      role: "user",
+      content: content.trim(),
+      attachments: pendingAttachments.length > 0 ? [...pendingAttachments] : undefined,
+      created_at: new Date().toISOString(),
+    };
 
     set({
+      messages: [...messages, tempUserMsg],
       isGenerating: true,
       currentThought: "",
       currentContent: "",
@@ -395,13 +405,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     try {
-      await fetch(`/api/sessions/${currentSessionId}/messages`, {
+      const res = await fetch(`/api/sessions/${currentSessionId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content, attachmentIds }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Message failed" }));
+        set({ isGenerating: false, lastError: err.error || "Failed to send message" });
+      }
     } catch {
-      set({ isGenerating: false });
+      set({ isGenerating: false, lastError: "Network error occurred" });
     }
   },
 
@@ -424,13 +438,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     try {
-      await fetch(`/api/sessions/${currentSessionId}/messages/${messageId}/edit`, {
+      const res = await fetch(`/api/sessions/${currentSessionId}/messages/${messageId}/edit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: newContent }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Edit failed" }));
+        set({ isGenerating: false, lastError: err.error || "Failed to edit message" });
+      }
     } catch {
-      set({ isGenerating: false });
+      set({ isGenerating: false, lastError: "Network error occurred" });
     }
   },
 
@@ -452,11 +470,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     try {
-      await fetch(`/api/sessions/${currentSessionId}/messages/${messageId}/regenerate`, {
+      const res = await fetch(`/api/sessions/${currentSessionId}/messages/${messageId}/regenerate`, {
         method: "POST",
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Regeneration failed" }));
+        set({ isGenerating: false, lastError: err.error || "Failed to regenerate message" });
+      }
     } catch {
-      set({ isGenerating: false });
+      set({ isGenerating: false, lastError: "Network error occurred" });
     }
   },
 
@@ -606,7 +628,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     on("turn_started", () => {
-      if (get().lastError) set({ lastError: null });
+      set((state) => ({
+        activeToolCalls: [],
+        lastError: state.lastError ? null : state.lastError,
+      }));
     });
 
     // Harness failure events carry a data payload; native EventSource

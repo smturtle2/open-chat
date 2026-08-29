@@ -48,18 +48,15 @@ export const PromptInput: React.FC = () => {
     wasSlashTyping.current = slashTyping;
   }, [slashTyping, refreshSkills]);
 
-  const slashMatch = /^\/([a-z0-9][a-z0-9_-]*)?$/.exec(content);
-  const token = slashMatch?.[1] ?? "";
+  const slashMatch = /^\/([a-zA-Z0-9_-]*)$/.exec(content);
+  const token = (slashMatch?.[1] ?? "").toLowerCase();
   const slashCandidates = slashMatch
-    ? skills.filter((s) => s.name.startsWith(token) && s.name !== token).slice(0, 8)
+    ? skills.filter((s) => s.name.toLowerCase().startsWith(token)).slice(0, 8)
     : [];
-  const exactSkill = token ? skills.find((s) => s.name === token) : undefined;
   const slashOpen =
-    !!slashMatch && !exactSkill && token !== dismissedToken && slashCandidates.length > 0;
+    !!slashMatch && token !== dismissedToken && slashCandidates.length > 0;
 
   const handleChange = (v: string) => {
-    // Any edit clears a previous Escape-dismissal; Esc only silences the
-    // CURRENT dropdown until the user types again.
     setDismissedToken(null);
     setSlashIdx(0);
     setContent(v);
@@ -71,10 +68,15 @@ export const PromptInput: React.FC = () => {
   };
 
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
-    }
+    const adjustHeight = () => {
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
+      }
+    };
+    adjustHeight();
+    window.addEventListener("resize", adjustHeight);
+    return () => window.removeEventListener("resize", adjustHeight);
   }, [content]);
 
   // Auto-focus filter input when sheet opens
@@ -328,6 +330,7 @@ export const PromptInput: React.FC = () => {
                 placeholder="Search models..."
                 className="w-full bg-zinc-50 dark:bg-zinc-900 text-sm text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-700 outline-none focus:border-zinc-400 dark:focus:border-zinc-500 font-mono"
                 onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return;
                   if (e.key === "Enter" && totalFiltered > 0) {
                     const g = filteredGroups[0];
                     handleSelectModel(g.models[0].id, g.provider_id);
@@ -336,7 +339,7 @@ export const PromptInput: React.FC = () => {
               />
             </div>
 
-            <div className="max-h-[52vh] overflow-y-auto border-t border-zinc-100 dark:border-zinc-800 py-1.5 px-1.5">
+            <div className="max-h-[52dvh] overflow-y-auto border-t border-zinc-100 dark:border-zinc-800 py-1.5 px-1.5">
               {totalFiltered === 0 ? (
                 <div className="px-3 py-3 text-sm text-zinc-400 text-center">
                   {modelGroups.length === 0 ? "프로바이더를 먼저 설정해 주세요" : "No models found"}

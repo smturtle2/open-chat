@@ -296,8 +296,8 @@ export class AgentHarness {
               }
 
               // 3. Tool Calls delta - Strict ID & Index Pointer Isolation
-              if (event.toolCall) {
-                const tc = event.toolCall;
+              const incomingCalls = event.toolCalls || (event.toolCall ? [event.toolCall] : []);
+              for (const tc of incomingCalls) {
                 if (tc.name && toolNameSequence[toolNameSequence.length - 1] !== tc.name) {
                   toolNameSequence.push(tc.name);
                 }

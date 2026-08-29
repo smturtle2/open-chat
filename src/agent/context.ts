@@ -255,9 +255,19 @@ export function buildHistory(
     }
   }
 
-  // ---- Pass 4: hard ceiling on record count -------------------------------
-  const flat = keptUnits.flatMap((u) => u.recs);
-  const sliced = flat.slice(-maxRecords);
+  // ---- Pass 4: hard ceiling on record count (atomic unit aware) ------------
+  // Slice by whole units from newest to oldest so assistant tool_calls and tool results are never split
+  let totalRecs = 0;
+  const unitsUnderCeiling: typeof keptUnits = [];
+  for (let i = keptUnits.length - 1; i >= 0; i--) {
+    const unit = keptUnits[i];
+    if (unitsUnderCeiling.length > 0 && totalRecs + unit.recs.length > maxRecords) {
+      break;
+    }
+    unitsUnderCeiling.unshift(unit);
+    totalRecs += unit.recs.length;
+  }
+  const sliced = unitsUnderCeiling.flatMap((u) => u.recs);
 
   // ---- Pass 5: emit API-shaped messages -----------------------------------
   const messages: BuiltMessage[] = [];
