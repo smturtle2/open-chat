@@ -198,7 +198,7 @@ export class AgentHarness {
         const decoder = new TextDecoder();
         let buffer = "";
 
-        while (true) {
+        streamLoop: while (true) {
           if (signal?.aborted) break;
 
           const { done, value } = await reader.read();
@@ -212,13 +212,19 @@ export class AgentHarness {
             const trimmed = line.trim();
             if (!trimmed || trimmed.startsWith(":") || !trimmed.startsWith("data: ")) continue;
             const dataStr = trimmed.slice(6);
-            if (dataStr === "[DONE]") break;
+            if (dataStr === "[DONE]") {
+              void reader.cancel().catch(() => {});
+              break streamLoop;
+            }
 
             try {
               const event = parseStreamData(endpoint.protocol, dataStr);
               if (!event) continue;
 
-              if (event.done) break;
+              if (event.done) {
+                void reader.cancel().catch(() => {});
+                break streamLoop;
+              }
 
               // 1. Dedicated thinking delta
               if (event.thought) {

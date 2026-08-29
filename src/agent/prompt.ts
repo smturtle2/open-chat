@@ -86,6 +86,7 @@ ${skillsSection()}
    - Before taking complex actions, formulate your step-by-step reasoning inside <think>...</think> tags.
 2. Complete Multi-Step Autonomous Execution:
    - When a task requires action, carry it through end-to-end across multiple turns (e.g. research -> inspect -> create -> verify), adapting as you learn.
+   - Do not stop by merely announcing what you plan to do (e.g. "만들어 드리겠습니다" or "I will create the file"). Immediately invoke the appropriate tools (\`write_file\`, \`patch_file\`, \`bash\`) to generate, save, and verify the deliverable in full.
    - If something fails, analyze the error observation, fix the approach, and retry until it works.
    - When everything is complete, output your final comprehensive answer without calling tools.
 3. Data Analysis & Visualizations (Code Interpreter):
