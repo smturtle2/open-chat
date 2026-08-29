@@ -133,6 +133,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addFiles: async (files) => {
     const { currentSessionId } = get();
     if (!currentSessionId) return;
+    const targetSessionId = currentSessionId;
     const list = Array.from(files);
     if (list.length === 0) return;
     set({ uploading: true });
@@ -141,18 +142,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
       try {
         const form = new FormData();
         form.append("file", file);
-        const res = await fetch(`/api/sessions/${currentSessionId}/attachments`, { method: "POST", body: form });
+        const res = await fetch(`/api/sessions/${targetSessionId}/attachments`, { method: "POST", body: form });
         if (res.ok) {
           added.push(await res.json());
         } else {
           const err = await res.json().catch(() => ({ error: "Upload failed" }));
-          set({ lastError: err.error || "Upload failed" });
+          if (get().currentSessionId === targetSessionId) {
+            set({ lastError: err.error || "Upload failed" });
+          }
         }
       } catch {
-        set({ lastError: "Upload failed" });
+        if (get().currentSessionId === targetSessionId) {
+          set({ lastError: "Upload failed" });
+        }
       }
     }
-    set((state) => ({ pendingAttachments: [...state.pendingAttachments, ...added].slice(0, 8), uploading: false }));
+    if (get().currentSessionId === targetSessionId) {
+      set((state) => ({ pendingAttachments: [...state.pendingAttachments, ...added].slice(0, 8), uploading: false }));
+    } else {
+      set({ uploading: false });
+    }
   },
 
   removePendingAttachment: (id) => {
@@ -288,9 +297,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (get().currentSessionId !== id) return;
 
       const rawMessages: Message[] = (data.messages || []).map((m: any) => {
+        let parsedToolCalls = undefined;
+        if (m.tool_calls) {
+          if (typeof m.tool_calls === "string") {
+            try {
+              parsedToolCalls = JSON.parse(m.tool_calls);
+            } catch {}
+          } else {
+            parsedToolCalls = m.tool_calls;
+          }
+        }
         const msg: Message = {
           ...m,
-          tool_calls: m.tool_calls ? (typeof m.tool_calls === "string" ? JSON.parse(m.tool_calls) : m.tool_calls) : undefined,
+          tool_calls: parsedToolCalls,
         };
         // Image observations are stored as envelopes; render via file route.
         if (msg.role === "tool" && typeof m.content === "string" && m.content.startsWith("{")) {
@@ -382,14 +401,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendMessage: async (content: string) => {
     const { currentSessionId, pendingAttachments, messages } = get();
-    if (!currentSessionId || !content.trim()) return;
+    if (!currentSessionId) return;
+    const promptText = content.trim();
+    if (!promptText && pendingAttachments.length === 0) return;
 
     const attachmentIds = pendingAttachments.map((a) => a.id).filter(Boolean) as string[];
+    const userMsgId = `msg_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const tempUserMsg: Message = {
-      id: `msg_user_${Date.now()}`,
+      id: userMsgId,
       session_id: currentSessionId,
       role: "user",
-      content: content.trim(),
+      content: promptText || "첨부된 파일 확인 및 분석",
       attachments: pendingAttachments.length > 0 ? [...pendingAttachments] : undefined,
       created_at: new Date().toISOString(),
     };
@@ -408,7 +430,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const res = await fetch(`/api/sessions/${currentSessionId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, attachmentIds }),
+        body: JSON.stringify({ id: userMsgId, content: promptText, attachmentIds }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "Message failed" }));
@@ -517,13 +539,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeToolCalls: [],
     });
 
-    on("thought_delta", ({ delta }) => set((state) => ({ currentThought: state.currentThought + delta })));
-    on("content_delta", ({ delta }) => set((state) => ({ currentContent: state.currentContent + delta })));
+    on("thought_delta", ({ delta }) =>
+      set((state) => ({
+        isGenerating: true,
+        currentThought: state.currentThought + delta,
+      }))
+    );
+    on("content_delta", ({ delta }) =>
+      set((state) => ({
+        isGenerating: true,
+        currentContent: state.currentContent + delta,
+      }))
+    );
 
     on("tool_executing", (payload) => {
       set((state) => {
-        if (state.activeToolCalls.some((t) => t.id === payload.id)) return state;
+        if (state.activeToolCalls.some((t) => t.id === payload.id)) return { isGenerating: true };
         return {
+          isGenerating: true,
           activeToolCalls: [
             ...state.activeToolCalls,
             { id: payload.id, name: payload.name, args: payload.args, status: "running" as const },
@@ -558,16 +591,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           role: "tool",
           tool_call_id: payload.tool_call_id,
           name: payload.name,
-          content: observation,
+          content: payload.observation,
           imageUrl,
           created_at: new Date().toISOString(),
         };
 
         const alreadyInMessages = state.messages.some(
-          (m) => m.tool_call_id === payload.tool_call_id
+          (m) => m.role === "tool" && m.tool_call_id === payload.tool_call_id
         );
 
         return {
+          isGenerating: true,
           activeToolCalls: updatedActive,
           messages: alreadyInMessages ? state.messages : [...state.messages, toolMsg],
         };
@@ -577,19 +611,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
     on("user_message", (payload) => {
       set((state) => {
         if (state.messages.some((m) => m.id === payload.id)) return state;
-        return {
-          messages: [
-            ...state.messages,
-            {
-              id: payload.id,
-              session_id: sessionId,
-              role: "user",
-              content: payload.content,
-              attachments: Array.isArray(payload.attachments) ? payload.attachments : undefined,
-              created_at: new Date().toISOString(),
-            },
-          ],
+
+        const reconciledMsg: Message = {
+          id: payload.id,
+          session_id: sessionId,
+          role: "user",
+          content: payload.content,
+          attachments: Array.isArray(payload.attachments) ? payload.attachments : undefined,
+          created_at: new Date().toISOString(),
         };
+
+        // Reconcile optimistic user message if present
+        const tempIdx = state.messages.findIndex(
+          (m) => m.role === "user" && (m.id.startsWith("msg_user_") || m.id === payload.id || m.content === payload.content)
+        );
+
+        if (tempIdx !== -1) {
+          const next = [...state.messages];
+          next[tempIdx] = reconciledMsg;
+          return { messages: next };
+        }
+
+        return { messages: [...state.messages, reconciledMsg] };
       });
     });
 
@@ -615,6 +658,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
     });
 
+    on("session_updated", (payload) => {
+      if (typeof payload.title === "string") {
+        set((state) => ({
+          sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, title: payload.title } : s)),
+        }));
+      }
+    });
+
     es.addEventListener("turn_completed", () => {
       if (get().currentSessionId !== sessionId) return;
       set(resetStreamState());
@@ -629,6 +680,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     on("turn_started", () => {
       set((state) => ({
+        isGenerating: true,
         activeToolCalls: [],
         lastError: state.lastError ? null : state.lastError,
       }));

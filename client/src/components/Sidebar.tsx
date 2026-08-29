@@ -127,11 +127,12 @@ export const Sidebar: React.FC = () => {
 
     const noDragTarget = (t: EventTarget | null) =>
       !!(t as HTMLElement | null)?.closest?.(
-        "pre, code, input, textarea, select, [contenteditable], [data-no-drag]"
+        "pre, code, input, textarea, select, table, .katex, [contenteditable], [data-no-drag], [data-artifact-viewer]"
       );
 
     const onDown = (e: PointerEvent) => {
       if (g) return;
+      if (useChatStore.getState().activeArtifact) return;
       clearTimeout(lpTimer);
       suppressClick.current = false;
 
@@ -172,7 +173,6 @@ export const Sidebar: React.FC = () => {
       raf = 0;
       if (!g || !pending) return;
       const { x, y } = pending;
-      pending = null;
       const dx = x - g.x0;
       const dy = y - g.y0;
 
@@ -186,8 +186,8 @@ export const Sidebar: React.FC = () => {
         g.axis = "x";
         suppressClick.current = true; // a locked horizontal drag is never a tap
         if (!openRef.current) {
-          // Open zone: rightward drag starting in the left half of the screen.
-          g.mode = dx > 0 && g.touch && g.x0 <= window.innerWidth * 0.5 ? "open" : "none";
+          // Open zone: rightward drag starting in the outer left edge (<= 28px).
+          g.mode = dx > 0 && g.touch && g.x0 <= 28 ? "open" : "none";
         } else if (g.row) {
           g.mode = "reveal"; // left exposes actions, right collapses them
         } else if (dx < 0) {

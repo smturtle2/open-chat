@@ -21,11 +21,11 @@ function generateCallId(): string {
 }
 
 export class AgentHarness {
-  async runAutonomousLoop(sessionId: string, userPrompt: string, signal?: AbortSignal, model?: string, attachmentIds: string[] = []) {
+  async runAutonomousLoop(sessionId: string, userPrompt: string, signal?: AbortSignal, model?: string, attachmentIds: string[] = [], clientMsgId?: string) {
     // 1. Record new user message — plain text only. Attachment markers are a
     // PROMPT-construction concern: they get appended in prepareMessages from
     // the attachments table, never stored in the transcript the user sees.
-    const userMsgId = "msg_" + Math.random().toString(36).substring(2, 11);
+    const userMsgId = clientMsgId || ("msg_" + Math.random().toString(36).substring(2, 11));
     const claimed = db.claimAttachments(userMsgId, sessionId, attachmentIds);
     db.addMessage({
       id: userMsgId,
@@ -359,6 +359,23 @@ export class AgentHarness {
       } catch (err: any) {
         flushDeltas();
         if (signal?.aborted) {
+          const partialContent = currentContent.trim();
+          const partialThought = currentThought.trim();
+          if (partialContent || partialThought) {
+            const assistantMsgId = "msg_" + Math.random().toString(36).substring(2, 11);
+            db.addMessage({
+              id: assistantMsgId,
+              session_id: sessionId,
+              role: "assistant",
+              content: partialContent || "",
+              thought: partialThought || undefined,
+            });
+            db.appendEvent(sessionId, "assistant_message", {
+              id: assistantMsgId,
+              content: partialContent || "",
+              thought: partialThought || undefined,
+            });
+          }
           db.appendEvent(sessionId, "task_interrupted", { message: "Task stopped by user" });
           break;
         }

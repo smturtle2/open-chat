@@ -84,8 +84,14 @@ export const ChatView: React.FC = () => {
 
         let rawCalls: any[] = [];
         if (msg.tool_calls) {
-          rawCalls =
-            typeof msg.tool_calls === "string" ? JSON.parse(msg.tool_calls) : msg.tool_calls;
+          if (typeof msg.tool_calls === "string") {
+            try {
+              const parsed = JSON.parse(msg.tool_calls);
+              if (Array.isArray(parsed)) rawCalls = parsed;
+            } catch {}
+          } else if (Array.isArray(msg.tool_calls)) {
+            rawCalls = msg.tool_calls;
+          }
         }
 
         for (const tc of rawCalls) {
@@ -241,9 +247,17 @@ export const ChatView: React.FC = () => {
                                 onChange={(e) => setEditingContent(e.target.value)}
                                 onKeyDown={(e) => {
                                   if (e.nativeEvent.isComposing) return;
-                                  if (e.key === "Enter" && !e.shiftKey) {
-                                    e.preventDefault();
-                                    handleSaveEdit(turn.userMsg!.id);
+                                  const isTouch = typeof window !== "undefined" && (window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window);
+                                  if (e.key === "Enter") {
+                                    if (e.ctrlKey || e.metaKey) {
+                                      e.preventDefault();
+                                      handleSaveEdit(turn.userMsg!.id);
+                                      return;
+                                    }
+                                    if (!isTouch && !e.shiftKey) {
+                                      e.preventDefault();
+                                      handleSaveEdit(turn.userMsg!.id);
+                                    }
                                   }
                                   if (e.key === "Escape") {
                                     setEditingMsgId(null);

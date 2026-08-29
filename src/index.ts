@@ -190,9 +190,9 @@ app.patch("/api/sessions/:id", async (c) => {
   return c.json(session || { success: true });
 });
 
-app.delete("/api/sessions/:id", (c) => {
+app.delete("/api/sessions/:id", async (c) => {
   const id = c.req.param("id");
-  coordinator.interrupt(id);
+  await coordinator.interruptAndWait(id);
   db.deleteSession(id);
   deleteChatWorkspace(id);
   void tools.cleanupContainer(id);
@@ -364,30 +364,35 @@ app.post("/api/sessions/:id/attachments", async (c) => {
 });
 
 // API: Messages & Execution
- app.post("/api/sessions/:id/messages", async (c) => {
-   const id = c.req.param("id");
-   const session = db.getSession(id);
-   if (!session) return c.json({ error: "Session not found" }, 404);
+app.post("/api/sessions/:id/messages", async (c) => {
+  const id = c.req.param("id");
+  const session = db.getSession(id);
+  if (!session) return c.json({ error: "Session not found" }, 404);
 
-   const body = await c.req.json().catch(() => ({}));
-   const prompt = (body.content || "").trim();
-   if (!prompt) return c.json({ error: "Content is required" }, 400);
+  const body = await c.req.json().catch(() => ({}));
+  const attachmentIds: string[] = Array.isArray(body.attachmentIds) ? body.attachmentIds.filter((x: any) => typeof x === "string").slice(0, 8) : [];
+  const clientMsgId = typeof body.id === "string" ? body.id : undefined;
 
-   const attachmentIds: string[] = Array.isArray(body.attachmentIds) ? body.attachmentIds.filter((x: any) => typeof x === "string").slice(0, 8) : [];
+  let prompt = (body.content || "").trim();
+  if (!prompt && attachmentIds.length > 0) {
+    prompt = "첨부된 파일 확인 및 분석";
+  }
+  if (!prompt) return c.json({ error: "Content is required" }, 400);
 
-   // Slash skill hints ("/name instructions") are stored VERBATIM in the
-   // transcript — the model resolves them itself via load_skill at turn time.
-   // Nothing is stripped or injected here.
+  // Slash skill hints ("/name instructions") are stored VERBATIM in the
+  // transcript — the model resolves them itself via load_skill at turn time.
+  // Nothing is stripped or injected here.
 
-   const messages = db.getMessages(id);
-   if (messages.length === 0 && session.title === "New Chat") {
-     const autoTitle = prompt.slice(0, 30) + (prompt.length > 30 ? "..." : "");
-     db.updateSessionTitle(id, autoTitle);
-   }
+  const messages = db.getMessages(id);
+  if (messages.length === 0 && (session.title === "New Chat" || session.title === "New Agent")) {
+    const autoTitle = prompt.slice(0, 30) + (prompt.length > 30 ? "..." : "");
+    db.updateSessionTitle(id, autoTitle);
+    db.appendEvent(id, "session_updated", { title: autoTitle });
+  }
 
-   coordinator.submit(id, prompt, attachmentIds);
-   return c.json({ status: "submitted" });
- });
+  coordinator.submit(id, prompt, attachmentIds, clientMsgId);
+  return c.json({ status: "submitted" });
+});
 
 // API: Edit Message and Re-run from that point (Message A -> B -> C: editing B updates B and regenerates B's answer)
 app.post("/api/sessions/:id/messages/:messageId/edit", async (c) => {

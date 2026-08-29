@@ -27,7 +27,7 @@ export class SessionCoordinator {
     return entry.promise.catch(() => undefined);
   }
 
-  submit(sessionId: string, prompt: string, attachmentIds: string[] = []): void {
+  submit(sessionId: string, prompt: string, attachmentIds: string[] = [], clientMsgId?: string): void {
     const previous = this.replaceTask(sessionId);
     const model = this.getSessionModel(sessionId);
 
@@ -36,7 +36,7 @@ export class SessionCoordinator {
     task.promise = previous.then(() => {
       // Superseded again while waiting for the old run to drain.
       if (controller.signal.aborted) return undefined;
-      return harness.runAutonomousLoop(sessionId, prompt, controller.signal, model, attachmentIds) as Promise<void>;
+      return harness.runAutonomousLoop(sessionId, prompt, controller.signal, model, attachmentIds, clientMsgId) as Promise<void>;
     }).finally(() => {
       if (this.activeTasks.get(sessionId) === task) this.activeTasks.delete(sessionId);
     });
@@ -44,7 +44,10 @@ export class SessionCoordinator {
   }
 
   regenerate(sessionId: string): void {
-    this.regenerateFrom(sessionId, null, null);
+    const lastUserMsg = db.getMessages(sessionId).filter((m) => m.role === "user").pop();
+    if (lastUserMsg) {
+      this.regenerateFrom(sessionId, lastUserMsg.id, null);
+    }
   }
 
   // Atomic edit/regenerate: waits for any running loop to drain BEFORE
@@ -76,6 +79,17 @@ export class SessionCoordinator {
     if (entry) {
       entry.controller.abort();
       this.activeTasks.delete(sessionId);
+      return true;
+    }
+    return false;
+  }
+
+  async interruptAndWait(sessionId: string): Promise<boolean> {
+    const entry = this.activeTasks.get(sessionId);
+    if (entry) {
+      entry.controller.abort();
+      this.activeTasks.delete(sessionId);
+      await entry.promise.catch(() => undefined);
       return true;
     }
     return false;

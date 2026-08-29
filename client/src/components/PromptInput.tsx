@@ -91,8 +91,11 @@ export const PromptInput: React.FC = () => {
     setModelFilter("");
   };
 
+  const isTouch = typeof window !== "undefined" && (window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window);
+
   const handleSubmit = () => {
-    if (!content.trim() || isGenerating || uploading) return;
+    const hasPending = pendingAttachments.length > 0;
+    if ((!content.trim() && !hasPending) || isGenerating || uploading) return;
     sendMessage(content);
     setContent("");
     if (textareaRef.current) {
@@ -103,6 +106,7 @@ export const PromptInput: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
 
   const handlePaste = (e: React.ClipboardEvent) => {
+    if (isGenerating || uploading || pendingAttachments.length >= 8) return;
     const files = Array.from(e.clipboardData?.files || []);
     if (files.length > 0) {
       e.preventDefault();
@@ -112,6 +116,7 @@ export const PromptInput: React.FC = () => {
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
+    if (isGenerating || uploading || pendingAttachments.length >= 8) return;
     setIsDragging(true);
   };
 
@@ -124,6 +129,7 @@ export const PromptInput: React.FC = () => {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
+    if (isGenerating || uploading || pendingAttachments.length >= 8) return;
     const files = Array.from(e.dataTransfer?.files || []);
     if (files.length > 0) addFiles(files);
   };
@@ -152,10 +158,20 @@ export const PromptInput: React.FC = () => {
         return;
       }
     }
-    // Enter to submit, Shift+Enter for newline
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSubmit();
+    // Enter key handling:
+    // Ctrl+Enter or Cmd+Enter always submits
+    // Desktop: Enter sends, Shift+Enter newlines
+    // Mobile (touch): Enter inserts newline, Send button submits
+    if (e.key === "Enter") {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        handleSubmit();
+        return;
+      }
+      if (!isTouch && !e.shiftKey) {
+        e.preventDefault();
+        handleSubmit();
+      }
     }
   };
 
@@ -257,7 +273,7 @@ export const PromptInput: React.FC = () => {
             value={content}
             onChange={(e) => handleChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Message OpenChat... (Enter to send, Shift+Enter for newline)"
+            placeholder={isTouch ? "Message OpenChat..." : "Message OpenChat... (Enter to send, Shift+Enter for newline)"}
             rows={1}
             className="flex-1 bg-transparent text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 text-sm leading-relaxed outline-none resize-none max-h-44 py-0.5 font-sans"
           />
@@ -273,13 +289,13 @@ export const PromptInput: React.FC = () => {
           ) : (
             <button
               onClick={handleSubmit}
-              disabled={!hasText}
+              disabled={!hasText && !hasAttachments}
               className={`size-9 rounded-full flex items-center justify-center transition-all flex-shrink-0 ${
-                hasText
+                hasText || hasAttachments
                   ? "bg-zinc-900 dark:bg-white text-white dark:text-black hover:opacity-85 cursor-pointer"
                   : "bg-zinc-100 dark:bg-zinc-800 text-zinc-300 dark:text-zinc-600 cursor-not-allowed"
               }`}
-              title="Send (Enter)"
+              title={isTouch ? "Send" : "Send (Enter)"}
             >
               <ArrowUp className="w-[18px] h-[18px] stroke-[2.5]" />
             </button>
