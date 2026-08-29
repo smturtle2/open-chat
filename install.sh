@@ -21,7 +21,7 @@ echo -e "${BOLD}${GREEN}   🚀 OpenChat: Self-Hosted AI Assistant Installer   $
 echo -e "${BOLD}${BLUE}=======================================================${NC}"
 
 # 1. Check prerequisites
-echo -e "\n${BOLD}[1/6] Checking system prerequisites...${NC}"
+echo -e "\n${BOLD}[1/7] Checking system prerequisites...${NC}"
 
 # Node.js check
 if ! command -v node >/dev/null 2>&1; then
@@ -53,7 +53,7 @@ if command -v python3 >/dev/null 2>&1; then
 fi
 
 # Docker check & automatic installation
-echo -e "\n${BOLD}[2/6] Checking Docker Engine & Sandbox environment...${NC}"
+echo -e "\n${BOLD}[2/7] Checking Docker Engine & Sandbox environment...${NC}"
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   echo -e "  ${YELLOW}!${NC} Docker not found or daemon not running. Attempting automatic installation..."
   if command -v curl >/dev/null 2>&1; then
@@ -72,7 +72,7 @@ else
 fi
 
 # 3. Determine target directory
-echo -e "\n${BOLD}[3/6] Setting up OpenChat repository...${NC}"
+echo -e "\n${BOLD}[3/7] Setting up OpenChat repository...${NC}"
 
 TARGET_DIR="${OPENCHAT_DIR:-$HOME/.openchat/app}"
 
@@ -108,7 +108,7 @@ else
 fi
 
 # 4. Install Dependencies (Root & Client)
-echo -e "\n${BOLD}[4/6] Installing dependencies & building frontend...${NC}"
+echo -e "\n${BOLD}[4/7] Installing dependencies & building frontend...${NC}"
 echo "  📦 Installing backend and core dependencies..."
 npm install --no-audit --no-fund
 
@@ -121,7 +121,7 @@ echo "  🔨 Building web application..."
 echo -e "  ${GREEN}✓${NC} Frontend built successfully"
 
 # 5. Configure Python host tools if python3 is available
-echo -e "\n${BOLD}[5/6] Setting up Python utilities...${NC}"
+echo -e "\n${BOLD}[5/7] Setting up Python utilities...${NC}"
 if command -v python3 >/dev/null 2>&1; then
   if [ ! -f ".venv/bin/pip" ]; then
     rm -rf .venv >/dev/null 2>&1 || true
@@ -138,8 +138,28 @@ if command -v python3 >/dev/null 2>&1; then
   fi
 fi
 
-# 6. Environment configuration & Global CLI Launcher
-echo -e "\n${BOLD}[6/6] Configuring environment & CLI launcher...${NC}"
+# 6. Pre-build Docker Sandbox environment
+echo -e "\n${BOLD}[6/7] Preparing Docker Sandbox environment...${NC}"
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  if docker image inspect openchat-sandbox:v2 >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} Docker sandbox image (openchat-sandbox:v2) ready"
+  else
+    echo "  🐳 Pre-building Docker sandbox image (openchat-sandbox:v2)..."
+    if [ -f "Dockerfile.sandbox" ]; then
+      docker build -f Dockerfile.sandbox -t openchat-sandbox:v2 . >/dev/null 2>&1 || true
+    fi
+    if docker image inspect openchat-sandbox:v2 >/dev/null 2>&1; then
+      echo -e "  ${GREEN}✓${NC} Docker sandbox image built successfully"
+    else
+      echo -e "  ${YELLOW}!${NC} Docker sandbox image will build on first tool execution."
+    fi
+  fi
+else
+  echo -e "  ${BLUE}ℹ${NC} Docker unavailable — running in host agent mode"
+fi
+
+# 7. Environment configuration & Global CLI Launcher
+echo -e "\n${BOLD}[7/7] Configuring environment & CLI launcher...${NC}"
 
 # .env configuration
 if [ ! -f .env ]; then

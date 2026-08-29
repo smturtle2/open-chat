@@ -49,10 +49,39 @@ async function main() {
   });
   check("responses body has model", responsesBody.model === "muse-spark-1.2-contributor");
   check("responses body has instructions", responsesBody.instructions === "You are a helpful assistant.");
-  check("responses body separates input from system", responsesBody.input.length === 1 && responsesBody.input[0].role === "user");
   check("responses body includes tools", responsesBody.tools?.length > 0);
   check("responses tools have top-level name", responsesBody.tools?.[0]?.name !== undefined && responsesBody.tools?.[0]?.parameters !== undefined);
   check("responses body has stream", responsesBody.stream === true);
+
+  // 3-1b. openai-responses tool results & assistant calls formatting
+  const toolCycleMessages = [
+    { role: "user", content: "Search web" },
+    {
+      role: "assistant",
+      content: "Searching...",
+      tool_calls: [
+        {
+          id: "call_123",
+          type: "function",
+          function: { name: "web_search", arguments: '{"query":"funny"}' },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      tool_call_id: "call_123",
+      content: "Found 3 results",
+    },
+  ];
+  const toolResponsesBody = buildRequestBody("openai-responses", {
+    model: "muse-spark-1.2-contributor",
+    messages: toolCycleMessages,
+    tools: sampleTools,
+  });
+  check("responses input[0] is user", toolResponsesBody.input[0].role === "user");
+  check("responses input[1] is assistant text", toolResponsesBody.input[1].role === "assistant" && toolResponsesBody.input[1].content === "Searching...");
+  check("responses input[2] is function_call", toolResponsesBody.input[2].type === "function_call" && toolResponsesBody.input[2].call_id === "call_123" && toolResponsesBody.input[2].name === "web_search");
+  check("responses input[3] is function_call_output", toolResponsesBody.input[3].type === "function_call_output" && toolResponsesBody.input[3].call_id === "call_123" && toolResponsesBody.input[3].output === "Found 3 results");
 
   // 3-2. anthropic-messages request body
   const messagesBody = buildRequestBody("anthropic-messages", {

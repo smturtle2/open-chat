@@ -91,8 +91,29 @@ export function buildRequestBody(protocol: ProtocolType, opts: BuildRequestOptio
     for (const msg of messages) {
       if (msg.role === "system") {
         instructions = instructions ? `${instructions}\n\n${msg.content}` : `${msg.content}`;
+      } else if (msg.role === "tool") {
+        input.push({
+          type: "function_call_output",
+          call_id: msg.tool_call_id || msg.id,
+          output: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+        });
+      } else if (msg.role === "assistant" && msg.tool_calls?.length > 0) {
+        if (msg.content) {
+          input.push({ role: "assistant", content: msg.content });
+        }
+        for (const tc of msg.tool_calls) {
+          input.push({
+            type: "function_call",
+            call_id: tc.id,
+            name: tc.function?.name,
+            arguments: typeof tc.function?.arguments === "string" ? tc.function.arguments : JSON.stringify(tc.function?.arguments || {}),
+          });
+        }
       } else {
-        input.push(msg);
+        input.push({
+          role: msg.role,
+          content: msg.content ?? "",
+        });
       }
     }
 
