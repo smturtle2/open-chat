@@ -27,7 +27,7 @@ export const StepSheet: React.FC<StepSheetProps> = ({ entries, live, sessionId, 
           </span>
         </div>
 
-        <div className="px-4 pb-5 pt-1 max-h-[58vh] overflow-y-auto border-t border-zinc-100 dark:border-zinc-800 space-y-3 font-sans text-xs">
+        <div className="px-4 pb-5 pt-1 max-h-[60dvh] overflow-y-auto border-t border-zinc-100 dark:border-zinc-800 space-y-3 font-sans text-xs">
           {entries.map((e, i) => (
             <StepListItem
               key={e.item.kind === "tool" ? e.item.id : `think_${i}`}

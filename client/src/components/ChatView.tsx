@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { Pencil, RotateCcw, ChevronDown, ChevronRight } from "lucide-react";
 import { useChatStore, Message } from "../store/useChatStore";
 import { MarkdownView } from "./MarkdownView";
-import { StepEntry, StepListItem } from "./Steps";
+import { StepEntry } from "./Steps";
+import { StepSheet } from "./StepSheet";
 
 type TurnSegment =
   | { type: "steps"; entries: StepEntry[]; live?: boolean }
@@ -194,11 +195,7 @@ export const ChatView: React.FC = () => {
     }
   }, [displayTurns, currentContent, isGenerating]);
 
-  const [expandedSteps, setExpandedSteps] = useState<Record<string, boolean>>({});
-
-  const toggleInlineSteps = (key: string) => {
-    setExpandedSteps((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
+  const [sheetKey, setSheetKey] = useState<string | null>(null);
 
   const handleStartEdit = (msg: Message) => {
     setEditingMsgId(msg.id);
@@ -210,6 +207,28 @@ export const ChatView: React.FC = () => {
     editMessage(msgId, editingContent.trim());
     setEditingMsgId(null);
   };
+
+  let sheetEntries: StepEntry[] | null = null;
+  let sheetLive = false;
+  if (sheetKey) {
+    for (let i = 0; i < displayTurns.length; i++) {
+      const turn = displayTurns[i];
+      const turnKey = turn.userMsg ? turn.userMsg.id : "__live__";
+      let ord = -1;
+      for (let j = 0; j < turn.segments.length; j++) {
+        const seg = turn.segments[j];
+        if (seg.type === "steps") {
+          ord++;
+          if (`${turnKey}_g${ord}` === sheetKey) {
+            sheetEntries = seg.entries;
+            sheetLive = Boolean(seg.live);
+            break;
+          }
+        }
+      }
+      if (sheetEntries) break;
+    }
+  }
 
   return (
     <div className="relative w-full h-full">
@@ -340,7 +359,7 @@ export const ChatView: React.FC = () => {
                       </div>
                     )}
 
-                    {/* 2. Assistant Turn Segments — inline step cards + text */}
+                    {/* 2. Assistant Turn Segments — minimal inline step text + text */}
                     {(turn.segments.length > 0 || (showStreamTail && !currentContent)) && (
                       <div className="flex w-full justify-start">
                         <div className="w-full max-w-full space-y-3 text-zinc-900 dark:text-zinc-100 text-[15px] leading-relaxed">
@@ -352,61 +371,34 @@ export const ChatView: React.FC = () => {
                               }
                               const segKey = `${turnKey}_g${ord}`;
                               const totalSteps = seg.entries.length;
+                              const isSheetOpen = sheetKey === segKey;
                               const hasActivity = seg.entries.some((e) => e.streaming || e.running);
-                              const isExpanded = expandedSteps[segKey] ?? (seg.live && hasActivity);
-
-                              // Extract active or primary label
                               const activeEntry = seg.entries.find((e) => e.running || e.streaming);
-                              const toolCount = seg.entries.filter((e) => e.item.kind === "tool").length;
-                              const hasThought = seg.entries.some((e) => e.item.kind === "think");
 
+                              // Live active text while running, clean 'N steps' when finished
                               let summaryLabel = `${totalSteps} step${totalSteps > 1 ? "s" : ""}`;
                               if (activeEntry) {
                                 summaryLabel = activeEntry.item.kind === "think" ? "Thinking…" : `Running ${activeEntry.item.name}…`;
-                              } else if (hasThought && toolCount > 0) {
-                                summaryLabel = `Thought & ${toolCount} tool${toolCount > 1 ? "s" : ""}`;
-                              } else if (hasThought) {
-                                summaryLabel = "Thought process";
-                              } else if (toolCount > 0) {
-                                summaryLabel = `${toolCount} tool${toolCount > 1 ? "s" : ""} used`;
                               }
 
                               return (
-                                <div key={segKey} className="my-1.5 rounded-xl border border-zinc-200/80 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/30 overflow-hidden transition-all">
+                                <div key={segKey} className="py-0.5">
                                   <button
-                                    onClick={() => toggleInlineSteps(segKey)}
-                                    className="w-full flex items-center justify-between px-3 py-2 text-xs text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 hover:bg-zinc-100/60 dark:hover:bg-zinc-800/40 cursor-pointer select-none transition-colors"
+                                    onClick={() => setSheetKey(sheetKey === segKey ? null : segKey)}
+                                    className="inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 cursor-pointer select-none transition-colors group"
                                   >
-                                    <div className="flex items-center gap-2 min-w-0">
-                                      {seg.live && hasActivity && (
-                                        <span className="w-2 h-2 rounded-full bg-violet-500 animate-pulse flex-shrink-0" />
-                                      )}
-                                      <span className="font-mono text-[12px] truncate font-medium">
-                                        {summaryLabel}
-                                      </span>
-                                    </div>
-                                    <div className="flex items-center gap-1 text-zinc-400">
-                                      <span className="text-[11px] font-mono">{totalSteps}</span>
-                                      {isExpanded ? (
-                                        <ChevronDown className="w-3.5 h-3.5" />
-                                      ) : (
-                                        <ChevronRight className="w-3.5 h-3.5" />
-                                      )}
-                                    </div>
+                                    {seg.live && hasActivity && (
+                                      <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse flex-shrink-0" />
+                                    )}
+                                    <span className="font-mono text-[11.5px] group-hover:underline">
+                                      {summaryLabel}
+                                    </span>
+                                    {isSheetOpen ? (
+                                      <ChevronDown className="w-3 h-3 text-zinc-400" />
+                                    ) : (
+                                      <ChevronRight className="w-3 h-3 text-zinc-400" />
+                                    )}
                                   </button>
-
-                                  {isExpanded && (
-                                    <div className="px-3.5 pb-3.5 pt-1 border-t border-zinc-200/60 dark:border-zinc-800 space-y-3 font-sans text-xs">
-                                      {seg.entries.map((e, i) => (
-                                        <StepListItem
-                                          key={e.item.kind === "tool" ? e.item.id : `think_${i}`}
-                                          entry={e}
-                                          idx={i}
-                                          sessionId={currentSessionId ?? undefined}
-                                        />
-                                      ))}
-                                    </div>
-                                  )}
                                 </div>
                               );
                             }
@@ -467,6 +459,16 @@ export const ChatView: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Bottom sheet with the steps details of the toggled group */}
+      {sheetEntries && (
+        <StepSheet
+          entries={sheetEntries}
+          live={sheetLive}
+          sessionId={currentSessionId ?? undefined}
+          onClose={() => setSheetKey(null)}
+        />
+      )}
     </div>
   );
 };
