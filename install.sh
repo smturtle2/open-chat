@@ -88,13 +88,23 @@ if [ -d "$TARGET_DIR/.git" ]; then
   echo -e "  ${BLUE}ℹ Existing installation found at: $TARGET_DIR${NC}"
   echo -e "  ${BOLD}Updating OpenChat to the latest version...${NC}"
   cd "$TARGET_DIR"
-  if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
-    echo -e "  ${YELLOW}!${NC} Local modifications found — preserving local files."
-  else
-    git fetch origin main >/dev/null 2>&1 || true
-    git pull origin main >/dev/null 2>&1 || true
+
+  # Backup .env if exists
+  if [ -f ".env" ]; then
+    cp .env /tmp/.openchat.env.bak 2>/dev/null || true
   fi
-  echo -e "  ${GREEN}✓${NC} Repository is ready"
+
+  git fetch origin main >/dev/null 2>&1 || true
+  git reset --hard origin/main >/dev/null 2>&1 || git pull origin main >/dev/null 2>&1 || true
+  git clean -fd -e .env -e .venv >/dev/null 2>&1 || true
+
+  if [ -f "/tmp/.openchat.env.bak" ] && [ ! -f ".env" ]; then
+    mv /tmp/.openchat.env.bak .env 2>/dev/null || true
+  else
+    rm -f /tmp/.openchat.env.bak 2>/dev/null || true
+  fi
+
+  echo -e "  ${GREEN}✓${NC} Repository updated to latest version"
 else
   echo -e "  ${BOLD}Cloning OpenChat to: $TARGET_DIR...${NC}"
   mkdir -p "$(dirname "$TARGET_DIR")"
