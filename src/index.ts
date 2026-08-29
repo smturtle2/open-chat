@@ -14,7 +14,7 @@ import { eventBus } from "./agent/eventBus.js";
 import { sniffImageMime } from "./agent/tools.js";
 import { listSkills, syncBuiltinSkills } from "./agent/skills.js";
 import { tools } from "./agent/tools.js";
-import { chatWorkspaceDir, sessionRoot, sessionMode, uploadsAbsDir, uploadsRelDir } from "./agent/sessionPaths.js";
+import { chatWorkspaceDir, sessionRoot, sessionMode, uploadsAbsDir, uploadsRelDir, pruneWorkspaces, deleteChatWorkspace } from "./agent/sessionPaths.js";
 import {
   createProvider,
   deleteProvider,
@@ -194,6 +194,7 @@ app.delete("/api/sessions/:id", (c) => {
   const id = c.req.param("id");
   coordinator.interrupt(id);
   db.deleteSession(id);
+  deleteChatWorkspace(id);
   void tools.cleanupContainer(id);
   return c.json({ success: true });
 });
@@ -497,7 +498,11 @@ if (!CONFIG.LLM_API_KEY && listProviders().every((p) => !p.api_key)) {
 }
 void tools.cleanupAllContainers();
 db.pruneToolOutputs();
-setInterval(() => db.pruneToolOutputs(), 24 * 3600_000).unref();
+pruneWorkspaces();
+setInterval(() => {
+  db.pruneToolOutputs();
+  pruneWorkspaces();
+}, 24 * 3600_000).unref();
 serve({
   fetch: app.fetch,
   port,

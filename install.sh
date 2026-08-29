@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# OpenChat - Universal One-Line Installer & Updater
+# OpenChat - Linux One-Line Installer & Updater
 # The Self-Hosted, Open-Source Alternative to ChatGPT & Claude
 #
 # Usage:
@@ -26,9 +26,8 @@ echo -e "\n${BOLD}[1/6] Checking system prerequisites...${NC}"
 # Node.js check
 if ! command -v node >/dev/null 2>&1; then
   echo -e "${RED}❌ Node.js is not installed.${NC}"
-  echo "Please install Node.js 20 or higher from https://nodejs.org or via your package manager."
-  echo "  - macOS: brew install node@22"
-  echo "  - Ubuntu/Debian: curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs"
+  echo "Please install Node.js 20 or higher:"
+  echo "  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs"
   exit 1
 fi
 
@@ -43,8 +42,7 @@ echo -e "  ${GREEN}✓${NC} Node.js $(node -v) detected"
 if ! command -v git >/dev/null 2>&1; then
   echo -e "${RED}❌ Git is not installed.${NC}"
   echo "Please install Git:"
-  echo "  - Ubuntu/Debian: sudo apt update && sudo apt install -y git"
-  echo "  - macOS: xcode-select --install || brew install git"
+  echo "  sudo apt update && sudo apt install -y git"
   exit 1
 fi
 echo -e "  ${GREEN}✓${NC} Git detected"
@@ -54,15 +52,30 @@ if command -v python3 >/dev/null 2>&1; then
   echo -e "  ${GREEN}✓${NC} Python $(python3 --version | cut -d' ' -f2) detected"
 fi
 
-# Docker check (Optional)
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  echo -e "  ${GREEN}✓${NC} Docker daemon running (Containerized Sandbox available)"
-else
-  echo -e "  ${YELLOW}!${NC} Docker not found or not running — OpenChat will run in Host Agent mode."
+# Docker check & automatic installation
+echo -e "\n${BOLD}[2/6] Checking Docker Engine & Sandbox environment...${NC}"
+if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  echo -e "  ${YELLOW}!${NC} Docker not found or daemon not running. Attempting automatic installation..."
+  if command -v curl >/dev/null 2>&1; then
+    # Run official Docker installation script
+    (curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && (sh /tmp/get-docker.sh 2>/dev/null || sudo sh /tmp/get-docker.sh 2>/dev/null || true)) || true
+    rm -f /tmp/get-docker.sh
+    # Add user to docker group
+    CURRENT_USER="$(whoami 2>/dev/null || echo root)"
+    usermod -aG docker "$CURRENT_USER" 2>/dev/null || sudo usermod -aG docker "$CURRENT_USER" 2>/dev/null || true
+    # Start docker daemon
+    systemctl enable --now docker 2>/dev/null || sudo systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || sudo service docker start 2>/dev/null || true
+  fi
 fi
 
-# 2. Determine target directory
-echo -e "\n${BOLD}[2/6] Setting up OpenChat repository...${NC}"
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  echo -e "  ${GREEN}✓${NC} Docker Engine running (Containerized Sandbox available)"
+else
+  echo -e "  ${YELLOW}!${NC} Docker daemon is not active. OpenChat will operate in Host Agent mode."
+fi
+
+# 3. Determine target directory
+echo -e "\n${BOLD}[3/6] Setting up OpenChat repository...${NC}"
 
 TARGET_DIR="${OPENCHAT_DIR:-}"
 
@@ -93,8 +106,8 @@ else
   echo -e "  ${GREEN}✓${NC} Repository cloned successfully"
 fi
 
-# 3. Install Dependencies (Root & Client)
-echo -e "\n${BOLD}[3/6] Installing dependencies...${NC}"
+# 4. Install Dependencies (Root & Client)
+echo -e "\n${BOLD}[4/6] Installing dependencies & building frontend...${NC}"
 echo "  📦 Installing backend and core dependencies..."
 npm install --no-audit --no-fund
 
@@ -102,8 +115,7 @@ echo "  📦 Installing client frontend dependencies..."
 (cd client && npm install --no-audit --no-fund)
 echo -e "  ${GREEN}✓${NC} Dependencies installed successfully"
 
-# 4. Build Frontend Web App
-echo -e "\n${BOLD}[4/6] Building web application...${NC}"
+echo "  🔨 Building web application..."
 (cd client && npm run build)
 echo -e "  ${GREEN}✓${NC} Frontend built successfully"
 
@@ -171,7 +183,7 @@ else
   echo -e "    or"
   echo -e "    ${BOLD}${BLUE}cd $TARGET_DIR && npm start${NC}"
   echo -e "\n  ${YELLOW}Tip:${NC} Add ${BOLD}$BIN_DIR${NC} to your PATH to run ${BOLD}openchat${NC} from anywhere:"
-  echo -e "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc  # (or ~/.zshrc)"
+  echo -e "    echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
 fi
 
 echo -e "\nThen open your browser at:"
