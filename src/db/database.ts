@@ -514,10 +514,8 @@ export class AppDatabase {
 export const db = new AppDatabase();
 
 process.on("SIGINT", () => {
-  db.close();
   process.exit(0);
 });
 process.on("SIGTERM", () => {
-  db.close();
   process.exit(0);
 });

@@ -33,6 +33,8 @@ async function resolvePath(rootDir: string, rawPath: string): Promise<ResolvedPa
   let abs: string;
   if (p === SKILLS_MOUNT || p.startsWith(SKILLS_MOUNT + "/")) {
     abs = path.join(CONFIG.SKILLS_DIR, p.slice(SKILLS_MOUNT.length));
+  } else if (p === "/workspace" || p.startsWith("/workspace/")) {
+    abs = path.join(rootDir, p.slice("/workspace".length));
   } else if (path.isAbsolute(p)) {
     // Bare absolute paths are interpreted against the skills root only for
     // the virtual mount; anything else must already be a real absolute path.
@@ -173,6 +175,8 @@ async function resolveTargetPath(rootDir: string, rawPath: string): Promise<{ ab
   let abs: string;
   if (p === SKILLS_MOUNT || p.startsWith(SKILLS_MOUNT + "/")) {
     abs = path.join(CONFIG.SKILLS_DIR, p.slice(SKILLS_MOUNT.length));
+  } else if (p === "/workspace" || p.startsWith("/workspace/")) {
+    abs = path.join(rootDir, p.slice("/workspace".length));
   } else if (path.isAbsolute(p)) {
     abs = p;
   } else {

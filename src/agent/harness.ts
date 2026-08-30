@@ -66,7 +66,6 @@ export class AgentHarness {
     const endpoint = resolveEndpoint({ provider: session.provider, model: model || session.model });
 
     let turn = 0;
-    const maxTurns = CONFIG.MAX_AGENT_TURNS;
     const maxConsecutiveErrors = 5;
     let consecutiveErrors = 0;
     // Empty-completion guard: upstream instability can terminate a stream
@@ -82,8 +81,8 @@ export class AgentHarness {
       cwd: sessionRootDir,
     };
 
-    // Autonomous loop: runs until the model delivers a final answer without tool calls, hits the turn cap, or is aborted.
-    while (turn < maxTurns) {
+    // Autonomous loop: runs until the model delivers a final answer without tool calls or is aborted.
+    while (true) {
       if (signal?.aborted) {
         db.appendEvent(sessionId, "task_interrupted", { message: "Task stopped by user" });
         break;
@@ -134,6 +133,7 @@ export class AgentHarness {
 
       let response: Response | null = null;
       let attempt = 0;
+      let lastErrorMessage = "";
 
       const targetUrl = getEndpointUrl(endpoint.baseUrl, endpoint.protocol);
       const requestBody = buildRequestBody(endpoint.protocol, {
@@ -153,7 +153,7 @@ export class AgentHarness {
         requestHeaders["anthropic-version"] = "2023-06-01";
       }
 
-      // Retry mechanism with exponential backoff for network/API resilience
+      // Retry mechanism with intelligent backoff and Retry-After support
       while (attempt < 3) {
         attempt++;
         try {
@@ -170,15 +170,50 @@ export class AgentHarness {
           }
 
           const errBody = await response.text();
-          console.warn(`[Harness] API attempt ${attempt} failed with status ${response.status}: ${errBody.slice(0, 300)}`);
-          if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, attempt * 1000));
+          let parsedMsg = "";
+          try {
+            const errJson = JSON.parse(errBody);
+            parsedMsg = errJson.error?.message || errJson.message || errBody;
+          } catch {
+            parsedMsg = errBody;
+          }
+          lastErrorMessage = parsedMsg.slice(0, 300);
+
+          console.warn(`[Harness] API attempt ${attempt} failed with status ${response.status}: ${lastErrorMessage}`);
+
+          if (attempt < 3 && !signal?.aborted) {
+            // Check for Retry-After header (common in 429 and 402 in_flight_budget_exhausted)
+            let waitMs = attempt * 1500;
+            const retryHeader = response.headers.get("retry-after");
+            if (retryHeader) {
+              const parsedSec = parseInt(retryHeader, 10);
+              if (!isNaN(parsedSec) && parsedSec > 0) {
+                waitMs = Math.min(parsedSec * 1000, 60000);
+              } else {
+                const parsedDate = new Date(retryHeader).getTime();
+                if (!isNaN(parsedDate) && parsedDate > Date.now()) {
+                  waitMs = Math.min(parsedDate - Date.now(), 60000);
+                }
+              }
+            } else if (response.status === 429 || response.status === 402) {
+              waitMs = Math.min(attempt * 5000, 20000);
+            }
+
+            const waitSec = Math.round(waitMs / 1000);
+            if (response.status === 429 || response.status === 402) {
+              db.appendEvent(sessionId, "empty_response_retry", {
+                message: `요청 대기 중 (${waitSec}초 후 재시도)... ${lastErrorMessage ? `[${lastErrorMessage.slice(0, 80)}]` : ""}`,
+              });
+            }
+
+            await new Promise((r) => setTimeout(r, waitMs));
           }
         } catch (fetchErr: any) {
           if (signal?.aborted) break;
-          console.warn(`[Harness] Fetch attempt ${attempt} error: ${fetchErr.message}`);
+          lastErrorMessage = fetchErr.message || "Network fetch error";
+          console.warn(`[Harness] Fetch attempt ${attempt} error: ${lastErrorMessage}`);
           if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, attempt * 1000));
+            await new Promise((r) => setTimeout(r, attempt * 1500));
           }
         }
       }
@@ -186,10 +221,14 @@ export class AgentHarness {
       if (!response || !response.ok || !response.body) {
         consecutiveErrors++;
         if (consecutiveErrors >= maxConsecutiveErrors) {
-          db.appendEvent(sessionId, "error", { message: "Failed to connect to LLM API after multiple attempts." });
+          const finalErrMsg = lastErrorMessage
+            ? `LLM API 요청 실패: ${lastErrorMessage}`
+            : "Failed to connect to LLM API after multiple attempts.";
+          db.appendEvent(sessionId, "error", { message: finalErrMsg });
+          db.appendEvent(sessionId, "turn_completed", { turn });
           break;
         }
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 2000));
         continue;
       }
 

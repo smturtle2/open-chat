@@ -200,7 +200,6 @@ export function buildRequestBody(protocol: ProtocolType, opts: BuildRequestOptio
     const body: Record<string, any> = {
       model,
       messages: formattedMessages,
-      max_tokens: 8192,
       stream,
     };
 

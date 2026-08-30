@@ -125,6 +125,12 @@ async function main() {
   const skillRead = await fsOp(root, { op: "read", path: "/opt/skills/my-skill/SKILL.md" });
   check("skills prefix maps to SKILLS_DIR", skillRead.includes("body"), skillRead);
 
+  const wsRead = await fsOp(root, { op: "read", path: "/workspace/hello.txt" });
+  check("workspace prefix maps to rootDir", wsRead.includes("alpha beta gamma"), wsRead);
+
+  const wsWrite = await fsOp(root, { op: "write", path: "/workspace/sub/dir/ws_new.txt", content: "ws_made" });
+  check("workspace write creates file in rootDir", wsWrite.includes('File "sub/dir/ws_new.txt"'));
+
   const write = await fsOp(root, { op: "write", path: "sub/dir/new.txt", content: "made" });
   check("write creates dirs", write.includes('File "sub/dir/new.txt"'));
 

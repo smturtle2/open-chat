@@ -93,7 +93,7 @@ async function main() {
   check("messages body has model", messagesBody.model === "qwen3.7-max");
   check("messages body has system", messagesBody.system === "You are a helpful assistant.");
   check("messages body formats messages array", messagesBody.messages.length === 1 && messagesBody.messages[0].role === "user");
-  check("messages body sets max_tokens", messagesBody.max_tokens === 8192);
+  check("messages body has no max_tokens", messagesBody.max_tokens === undefined);
   check("messages body converts tools to input_schema", messagesBody.tools?.[0]?.input_schema !== undefined);
 
   // 3-3. openai-chat request body

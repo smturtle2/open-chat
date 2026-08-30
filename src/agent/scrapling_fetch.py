@@ -85,14 +85,14 @@ def run_fetch(params: dict, workspace_dir: str):
 
         # Formatting
         if extract_format == "html":
-            return (html_content[:15000] + screenshot_msg)
+            return (html_content + screenshot_msg)
 
         elif extract_format == "text":
             soup = BeautifulSoup(html_content, "lxml")
             for tag in soup(["script", "style", "nav", "footer", "noscript"]):
                 tag.decompose()
             text = soup.get_text(separator=" ", strip=True)
-            return (text[:12000] + screenshot_msg)
+            return (text + screenshot_msg)
 
         elif extract_format == "links":
             soup = BeautifulSoup(html_content, "lxml")
@@ -119,7 +119,7 @@ def run_fetch(params: dict, workspace_dir: str):
                 "paragraphs": paragraphs[:20],
                 "links": links[:30],
             }
-            return (json.dumps(data, ensure_ascii=False, indent=2)[:15000] + screenshot_msg)
+            return (json.dumps(data, ensure_ascii=False, indent=2) + screenshot_msg)
 
         else:  # markdown (default)
             soup = BeautifulSoup(html_content, "lxml")
@@ -128,7 +128,7 @@ def run_fetch(params: dict, workspace_dir: str):
             md = markdownify.markdownify(str(soup), heading_style="ATX")
             lines = [line.strip() for line in md.split("\n") if line.strip()]
             cleaned = "\n\n".join(lines)
-            return (cleaned[:12000] or "[Scrapling] Extracted empty text from page.") + screenshot_msg
+            return (cleaned or "[Scrapling] Extracted empty text from page.") + screenshot_msg
 
     except Exception as e:
         return f"[Scrapling Error]: {type(e).__name__}: {str(e)}"

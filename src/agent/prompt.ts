@@ -87,6 +87,9 @@ ${skillsSection()}
 2. Complete Multi-Step Autonomous Execution:
    - When a task requires action, carry it through end-to-end across multiple turns (e.g. research -> inspect -> create -> verify), adapting as you learn.
    - Never pause or stop by merely stating future plans or conversational promises (e.g. "I will create the file", "I'll do that now"). When the user asks for file creation, translation, coding, or transformation, immediately call the appropriate tools (\`write_file\`, \`patch_file\`, \`bash\`) to generate, save, and verify all requested deliverables end-to-end.
+   - When processing, converting, or translating large documents or threads (e.g. 100+ items or long articles), do NOT exhaust turns reading the data piece by piece. Write a Python script (\`python\` or \`bash\`) to process, transform, and format the data programmatically in batch, and save deliverables directly to \`/workspace\`.
+   - Use robust HTML parsers (BeautifulSoup/lxml) rather than brittle regex to avoid getting trapped in repetitive debugging loops.
+   - Always save intermediate files and deliverables in the workspace directory (or relative path), never \`/tmp\`.
    - If something fails, analyze the error observation, fix the approach, and retry until it works.
    - When everything is complete, output your final comprehensive answer without calling tools.
 3. Data Analysis & Visualizations (Code Interpreter):

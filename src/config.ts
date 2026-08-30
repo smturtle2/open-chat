@@ -37,6 +37,5 @@ export const CONFIG = {
   // OPENCHAT_THOUGHT_RETENTION=off to fall back to dropping all thoughts.
   THOUGHT_RETENTION: (process.env.OPENCHAT_THOUGHT_RETENTION || "task") !== "off",
   DB_PATH: path.resolve(process.env.OPENCHAT_DB_PATH || defaultDb),
-  MAX_AGENT_TURNS: parseInt(process.env.OPENCHAT_MAX_TURNS || "40", 10),
   MAX_WORKSPACES_KEEP: parseInt(process.env.OPENCHAT_MAX_WORKSPACES || "30", 10),
 };
