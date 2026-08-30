@@ -256,9 +256,29 @@ function runChild(
   let settled = false;
   let release!: (r: ExecResult) => void;
   const done = new Promise<ExecResult>((res) => (release = res));
+
+  const abortHandler = () => {
+    killAndSettle({
+      ...collect.result(),
+      code: -1,
+      err: `${label} aborted by user.`,
+      interrupted: true,
+    });
+  };
+
+  const cleanupSignal = () => {
+    if (signal) {
+      try {
+        signal.removeEventListener("abort", abortHandler);
+      } catch {}
+    }
+  };
+
   const settle = (r: ExecResult) => {
     if (!settled) {
       settled = true;
+      clearTimeout(timer);
+      cleanupSignal();
       release(r);
     }
   };
@@ -276,16 +296,6 @@ function runChild(
     });
   }, timeoutMs);
 
-  const abortHandler = () => {
-    clearTimeout(timer);
-    killAndSettle({
-      ...collect.result(),
-      code: -1,
-      err: `${label} aborted by user.`,
-      interrupted: true,
-    });
-  };
-
   if (signal) {
     if (signal.aborted) {
       clearTimeout(timer);
@@ -300,11 +310,9 @@ function runChild(
   if (stdinData !== undefined) child.stdin?.end(stdinData);
 
   child.on("close", (code) => {
-    clearTimeout(timer);
     settle({ ...collect.result(), code });
   });
   child.on("error", (err) => {
-    clearTimeout(timer);
     settle({ out: "", err: err.message, code: -1, truncated: false });
   });
 

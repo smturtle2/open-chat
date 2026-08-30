@@ -152,6 +152,42 @@ async function main() {
   check("skills section listed when installed", chatPrompt.includes("# Skills:") && chatPrompt.includes("my-skill"));
   check("history/tools sections kept", chatPrompt.includes("# History convention:") && chatPrompt.includes("`bash`"));
 
+  // ---- Codex 0.151.0 ToolCircuitBreaker & normalizer tests ------------------
+  const { ToolCircuitBreaker, getToolCallSignature } = await import("../src/agent/harness.js");
+  const { normalizeToolOutput } = await import("../src/agent/jsonUtils.js");
+
+  const sig1 = getToolCallSignature("bash", { command: "ls -la", timeout: 10 });
+  const sig2 = getToolCallSignature("bash", { timeout: 10, command: "ls -la" });
+  check("getToolCallSignature canonical order", sig1 === sig2);
+
+  const breaker = new ToolCircuitBreaker();
+  const failingObs = "Tool Execution Error: File not found";
+  const okObs = "File content successfully read";
+
+  // 1st failure: passed as is
+  const res1 = breaker.intercept("read_file", { path: "missing.py" }, failingObs);
+  check("breaker pass 1 untouched", res1 === failingObs);
+
+  // 2nd failure: passed as is
+  const res2 = breaker.intercept("read_file", { path: "missing.py" }, failingObs);
+  check("breaker pass 2 untouched", res2 === failingObs);
+
+  // 3rd failure: triggers System Intervention
+  const res3 = breaker.intercept("read_file", { path: "missing.py" }, failingObs);
+  check("breaker pass 3 injects intervention", res3.includes("[System Intervention: Broken Tool Loop Detected]") && res3.includes("3 consecutive times"));
+
+  // 4th failure: still intercepted
+  breaker.intercept("read_file", { path: "missing.py" }, failingObs);
+  check("breaker shouldAbort false before 5", breaker.shouldAbort("read_file", { path: "missing.py" }) === false);
+
+  // 5th failure: triggers shouldAbort
+  breaker.intercept("read_file", { path: "missing.py" }, failingObs);
+  check("breaker shouldAbort true at 5", breaker.shouldAbort("read_file", { path: "missing.py" }) === true);
+
+  // Normalizer tests
+  check("normalizeToolOutput string untouched", normalizeToolOutput("hello") === "hello");
+  check("normalizeToolOutput object stringified", normalizeToolOutput({ a: 1 }).includes('"a": 1'));
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);
 }

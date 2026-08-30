@@ -20,6 +20,58 @@ function generateCallId(): string {
   return "call_" + Math.random().toString(36).substring(2, 12);
 }
 
+export function getToolCallSignature(name: string, args?: Record<string, any>): string {
+  const sortedKeys = Object.keys(args || {}).sort();
+  const canonicalObj: Record<string, any> = {};
+  for (const k of sortedKeys) canonicalObj[k] = (args || {})[k];
+  return `${name}:${JSON.stringify(canonicalObj)}`;
+}
+
+/**
+ * Codex 0.151.0 Tool Circuit Breaker:
+ * Detects and intercepts repetitive broken tool calls (Doom Loops).
+ */
+export class ToolCircuitBreaker {
+  private history: Array<{ signature: string; isError: boolean }> = [];
+
+  public intercept(name: string, args: Record<string, any> | undefined, observation: string): string {
+    const isError = /Tool Execution Error|^Error\b|exit code [1-9]|exit status [1-9]|No such file|Failed/i.test(observation);
+    const signature = getToolCallSignature(name, args);
+    this.history.push({ signature, isError });
+    if (this.history.length > 10) this.history.shift();
+
+    if (!isError) return observation;
+
+    let consecutiveFailures = 0;
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      if (this.history[i].signature === signature && this.history[i].isError) {
+        consecutiveFailures++;
+      } else {
+        break;
+      }
+    }
+
+    if (consecutiveFailures >= 3) {
+      return `[System Intervention: Broken Tool Loop Detected]\nYou have executed '${name}' with identical failing arguments ${consecutiveFailures} consecutive times. You are strictly prohibited from repeating this exact call.\nYou MUST analyze the root cause and switch to a different strategy (e.g. read files to verify contents, change parameters, or write a python script to process in batch).\n\nOriginal Error Observation:\n${observation}`;
+    }
+
+    return observation;
+  }
+
+  public shouldAbort(name: string, args?: Record<string, any>): boolean {
+    const signature = getToolCallSignature(name, args);
+    let consecutiveFailures = 0;
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      if (this.history[i].signature === signature && this.history[i].isError) {
+        consecutiveFailures++;
+      } else {
+        break;
+      }
+    }
+    return consecutiveFailures >= 5;
+  }
+}
+
 export class AgentHarness {
   async runAutonomousLoop(sessionId: string, userPrompt: string, signal?: AbortSignal, model?: string, attachmentIds: string[] = [], clientMsgId?: string) {
     // 1. Record new user message — plain text only. Attachment markers are a
@@ -80,6 +132,8 @@ export class AgentHarness {
       mode: session.mode,
       cwd: sessionRootDir,
     };
+
+    const circuitBreaker = new ToolCircuitBreaker();
 
     // Autonomous loop: runs until the model delivers a final answer without tool calls or is aborted.
     while (true) {
@@ -564,9 +618,15 @@ export class AgentHarness {
             observation = `Tool Execution Error: ${toolErr.message || String(toolErr)}`;
           }
 
-          return { tc, observation };
+          // Codex 0.151.0: Intercept repetitive broken tool retry cycles (Doom Loops)
+          observation = circuitBreaker.intercept(tc.function.name, parsedArgs, observation);
+
+          return { tc, observation, parsedArgs };
         })
       );
+
+      let fatalDoomLoopDetected = false;
+      let failingToolName = "";
 
       // Record tool messages in exact tool_calls order to guarantee API pairing compliance
       for (const res of executionResults) {
@@ -586,6 +646,18 @@ export class AgentHarness {
           name: res.tc.function.name,
           observation: res.observation,
         });
+
+        if (circuitBreaker.shouldAbort(res.tc.function.name, res.parsedArgs)) {
+          fatalDoomLoopDetected = true;
+          failingToolName = res.tc.function.name;
+        }
+      }
+
+      if (fatalDoomLoopDetected) {
+        console.warn(`[Harness] Aborting loop due to persistent broken tool cycle: ${failingToolName}`);
+        db.appendEvent(sessionId, "error", { message: `동일한 도구(${failingToolName})의 지속적인 실패로 인해 작업을 안전하게 중단했습니다.` });
+        db.appendEvent(sessionId, "turn_completed", { turn });
+        break;
       }
 
       if (signal?.aborted) {

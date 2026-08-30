@@ -250,3 +250,17 @@ export function parseToolArguments(argumentsStr: string | undefined | null): Rec
   }
   return { raw: argumentsStr };
 }
+
+/**
+ * Codex 0.151.0 Tool Output Single-Pass Normalizer:
+ * Prevents double-escaped JSON strings (\"{\\\"res\\\": 1}\") when passing tool outputs.
+ */
+export function normalizeToolOutput(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (output === null || output === undefined) return "";
+  try {
+    return JSON.stringify(output, null, 2);
+  } catch {
+    return String(output);
+  }
+}
