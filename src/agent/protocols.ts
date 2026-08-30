@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "./toolTypes.js";
+import { CONFIG } from "../config.js";
 
 export type ProtocolType = "openai-chat" | "openai-responses" | "anthropic-messages";
 
@@ -200,6 +201,7 @@ export function buildRequestBody(protocol: ProtocolType, opts: BuildRequestOptio
     const body: Record<string, any> = {
       model,
       messages: formattedMessages,
+      max_tokens: CONFIG.MAX_OUTPUT_TOKENS || 8192,
       stream,
     };
 
@@ -222,6 +224,7 @@ export function buildRequestBody(protocol: ProtocolType, opts: BuildRequestOptio
   const body: Record<string, any> = {
     model,
     messages,
+    max_tokens: CONFIG.MAX_OUTPUT_TOKENS || 8192,
     stream,
   };
 

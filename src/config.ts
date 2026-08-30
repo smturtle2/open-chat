@@ -38,4 +38,5 @@ export const CONFIG = {
   THOUGHT_RETENTION: (process.env.OPENCHAT_THOUGHT_RETENTION || "task") !== "off",
   DB_PATH: path.resolve(process.env.OPENCHAT_DB_PATH || defaultDb),
   MAX_WORKSPACES_KEEP: parseInt(process.env.OPENCHAT_MAX_WORKSPACES || "30", 10),
+  MAX_OUTPUT_TOKENS: parseInt(process.env.OPENCHAT_MAX_OUTPUT_TOKENS || "8192", 10),
 };
