@@ -110,7 +110,7 @@ fs.mkdirSync(path.join(skillsRoot, "orphan-dir"), { recursive: true }); // no SK
     db.claimAttachments(uid, sid, ["att_img00d2"]);
 
     const records = db.getMessages(sid) as any[];
-    const msgs = await (harness as any).prepareMessages(records, path.join(os.tmpdir(), "ws-x"));
+    const msgs = await (harness as any).prepareMessages(db.getSession(sid), path.join(os.tmpdir(), "ws-x"), records);
 
     const sys = msgs[0].content as string;
     check("prompt: available_skills section present", sys.includes("<available_skills>") && sys.includes("<name>alpha-test</name>"));
@@ -120,8 +120,8 @@ fs.mkdirSync(path.join(skillsRoot, "orphan-dir"), { recursive: true }); // no SK
     const user = msgs.find((m: any) => m.role === "user");
     check("enrich: slash text passes through verbatim", String(user.content).startsWith("/alpha-test 알파 실행해줘"));
     check("enrich: no skill body injected server-side", !String(user.content).includes("<skill_content"));
-    check("enrich: attachment marker coexists", String(user.content).includes("[첨부 이미지: uploads/pic.png · 2KB]"));
-    check("enrich: order = slash token → markers", String(user.content).indexOf("/alpha-test") < String(user.content).indexOf("[첨부 이미지"));
+    check("enrich: attachment marker coexists", String(user.content).includes("[Attached Image: uploads/pic.png (2KB)]"));
+    check("enrich: order = slash token → markers", String(user.content).indexOf("/alpha-test") < String(user.content).indexOf("[Attached Image"));
 
     // sandbox-path discipline: model-facing surfaces must never leak host paths
     check("prompt: no host paths leaked", !sys.includes("/root/") && sys.includes("/opt/skills/"));

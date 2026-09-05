@@ -9,12 +9,14 @@ export interface NormalizedStreamEvent {
   toolCall?: {
     index?: number;
     id?: string;
+    itemId?: string;
     name?: string;
     argumentsDelta?: string;
   };
   toolCalls?: Array<{
     index?: number;
     id?: string;
+    itemId?: string;
     name?: string;
     argumentsDelta?: string;
   }>;
@@ -128,6 +130,7 @@ export function buildRequestBody(protocol: ProtocolType, opts: BuildRequestOptio
       model,
       input,
       stream,
+      max_output_tokens: CONFIG.MAX_OUTPUT_TOKENS,
     };
 
     if (instructions) {
@@ -264,6 +267,7 @@ export function parseStreamData(protocol: ProtocolType, dataStr: string): Normal
           toolCall: {
             index: chunk.output_index ?? chunk.call_index ?? 0,
             id: chunk.call_id || chunk.id,
+            itemId: chunk.item_id,
             name: chunk.name,
             argumentsDelta: chunk.delta || "",
           },
@@ -275,6 +279,7 @@ export function parseStreamData(protocol: ProtocolType, dataStr: string): Normal
           toolCall: {
             index: chunk.output_index ?? 0,
             id: chunk.item.call_id || chunk.item.id,
+            itemId: chunk.item.id,
             name: chunk.item.name,
             argumentsDelta: "",
           },

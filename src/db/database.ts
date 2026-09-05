@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { CONFIG } from "../config.js";
 import { eventBus } from "../agent/eventBus.js";
+import type { ToolStatus } from "../agent/toolTypes.js";
 
 export type SessionMode = "chat" | "agent";
 
@@ -16,6 +17,24 @@ export interface SessionRecord {
   created_at: string;
   updated_at: string;
   status: "idle" | "running";
+  latest_run_id?: string | null;
+}
+
+export type RunStatus = "queued" | "running" | "stopping" | "completed" | "interrupted" | "failed";
+export type RunOutcome = Extract<RunStatus, "completed" | "interrupted" | "failed">;
+export interface RunRecord {
+  id: string;
+  session_id: string;
+  status: RunStatus;
+  created_at: string;
+  updated_at: string;
+}
+export interface RunSnapshot {
+  id: string;
+  status: RunStatus;
+  thought: string;
+  content: string;
+  tools: Array<{ id: string; name: string; args: any; status: "running" | "completed" | "error"; observation?: string; ok?: boolean }>;
 }
 
 // ---- Providers (multi-provider LLM endpoints, opencode.json-style) ----
@@ -23,6 +42,7 @@ export interface SessionRecord {
 export interface ProviderModel {
   id: string;
   name?: string;
+  context_window?: number;
 }
 
 export interface ProviderRecord {
@@ -46,6 +66,8 @@ export interface MessageRecord {
   tool_calls?: string | any[];
   tool_call_id?: string;
   name?: string;
+  tool_status?: string | ToolStatus;
+  output_id?: number;
   created_at: string;
 }
 
@@ -54,6 +76,7 @@ export interface EventRecord {
   session_id: string;
   type: string;
   payload: string;
+  run_id?: string | null;
   created_at: string;
 }
 
@@ -188,6 +211,15 @@ export class AppDatabase {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS runs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
     `);
 
     // Migrations: add columns if missing (ad-hoc, ordered)
@@ -205,6 +237,13 @@ export class AppDatabase {
     if (!has("workdir")) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN workdir TEXT`);
     }
+    if (!has("latest_run_id")) this.db.exec("ALTER TABLE sessions ADD COLUMN latest_run_id TEXT");
+    const messageCols = this.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (!messageCols.some((c) => c.name === "tool_status")) this.db.exec("ALTER TABLE messages ADD COLUMN tool_status TEXT");
+    if (!messageCols.some((c) => c.name === "output_id")) this.db.exec("ALTER TABLE messages ADD COLUMN output_id INTEGER");
+    const eventCols = this.prepare("PRAGMA table_info(events)").all() as { name: string }[];
+    if (!eventCols.some((c) => c.name === "run_id")) this.db.exec("ALTER TABLE events ADD COLUMN run_id TEXT");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id)");
   }
 
   // Session Operations
@@ -263,12 +302,66 @@ export class AppDatabase {
     this.prepare("DELETE FROM sessions WHERE id = ?").run(id);
   }
 
+  touchSession(id: string): void {
+    this.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+  }
+
+  createRun(id: string, sessionId: string): RunRecord {
+    const now = new Date().toISOString();
+    this.db.transaction(() => {
+      this.prepare("INSERT INTO runs (id, session_id, status, created_at, updated_at) VALUES (?, ?, 'queued', ?, ?)").run(id, sessionId, now, now);
+      this.prepare("UPDATE sessions SET latest_run_id = ?, status = 'running', updated_at = ? WHERE id = ?").run(id, now, sessionId);
+    })();
+    this.appendEvent(sessionId, "run_queued", {}, id);
+    return { id, session_id: sessionId, status: "queued", created_at: now, updated_at: now };
+  }
+
+  setRunStatus(runId: string, status: RunStatus): void {
+    this.prepare("UPDATE runs SET status = ?, updated_at = ? WHERE id = ?").run(status, new Date().toISOString(), runId);
+  }
+
+  finishRun(sessionId: string, runId: string, status: RunOutcome): void {
+    this.setRunStatus(runId, status);
+    this.prepare("UPDATE sessions SET status = 'idle', updated_at = ? WHERE id = ? AND latest_run_id = ?")
+      .run(new Date().toISOString(), sessionId, runId);
+    this.appendEvent(sessionId, "run_finished", { status }, runId);
+  }
+
+  recoverInterruptedRuns(): void {
+    const runs = this.prepare("SELECT * FROM runs WHERE status IN ('queued', 'running', 'stopping')").all() as RunRecord[];
+    for (const run of runs) this.finishRun(run.session_id, run.id, "interrupted");
+    this.prepare("UPDATE sessions SET status = 'idle' WHERE status = 'running'").run();
+  }
+
+  getRunSnapshot(sessionId: string): RunSnapshot | null {
+    const run = this.prepare("SELECT runs.* FROM runs JOIN sessions ON sessions.latest_run_id = runs.id WHERE sessions.id = ?")
+      .get(sessionId) as RunRecord | undefined;
+    if (!run) return null;
+    const snapshot: RunSnapshot = { id: run.id, status: run.status, content: "", thought: "", tools: [] };
+    if (!["queued", "running", "stopping"].includes(run.status)) return snapshot;
+    const events = this.prepare("SELECT * FROM events WHERE run_id = ? ORDER BY id").all(run.id) as EventRecord[];
+    for (const event of events) {
+      let payload: any;
+      try { payload = JSON.parse(event.payload); } catch { continue; }
+      if (event.type === "turn_started") { snapshot.content = ""; snapshot.thought = ""; snapshot.tools = []; }
+      else if (event.type === "content_delta") snapshot.content += payload.delta || "";
+      else if (event.type === "thought_delta") snapshot.thought += payload.delta || "";
+      else if (event.type === "assistant_message") { snapshot.content = ""; snapshot.thought = ""; }
+      else if (event.type === "tool_executing") snapshot.tools.push({ id: payload.id, name: payload.name, args: payload.args, status: "running" });
+      else if (event.type === "tool_observed") {
+        const tool = snapshot.tools.find((t) => t.id === payload.tool_call_id);
+        if (tool) Object.assign(tool, { status: payload.tool_status?.ok === false ? "error" : "completed", observation: payload.observation, ok: payload.tool_status?.ok });
+      }
+    }
+    return snapshot;
+  }
+
   // Message Operations
   addMessage(msg: Omit<MessageRecord, "created_at"> & { created_at?: string }) {
     const now = msg.created_at || new Date().toISOString();
     const toolCallsStr = typeof msg.tool_calls === "object" ? JSON.stringify(msg.tool_calls) : msg.tool_calls;
     this.prepare(
-      "INSERT INTO messages (id, session_id, role, content, thought, tool_calls, tool_call_id, name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO messages (id, session_id, role, content, thought, tool_calls, tool_call_id, name, tool_status, output_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).run(
       msg.id,
       msg.session_id,
@@ -278,6 +371,8 @@ export class AppDatabase {
       toolCallsStr || null,
       msg.tool_call_id || null,
       msg.name || null,
+      typeof msg.tool_status === "object" ? JSON.stringify(msg.tool_status) : msg.tool_status || null,
+      msg.output_id ?? null,
       now
     );
   }
@@ -287,7 +382,11 @@ export class AppDatabase {
   }
 
   updateMessageContent(sessionId: string, messageId: string, content: string): void {
-    this.prepare("UPDATE messages SET content = ? WHERE session_id = ? AND id = ?").run(content, sessionId, messageId);
+    this.db.transaction(() => {
+      this.prepare("UPDATE messages SET content = ? WHERE session_id = ? AND id = ?").run(content, sessionId, messageId);
+      this.prepare("UPDATE events SET payload = json_set(payload, '$.content', ?) WHERE session_id = ? AND type = 'user_message' AND json_extract(payload, '$.id') = ?")
+        .run(content, sessionId, messageId);
+    })();
   }
 
   // Truncate all messages and events strictly AFTER a specific message ID
@@ -300,29 +399,31 @@ export class AppDatabase {
     if (targetMsg) {
       // Find the corresponding user_message event in events table
       const targetEvent = this.prepare(
-        "SELECT id FROM events WHERE session_id = ? AND type = 'user_message' AND payload LIKE ? ORDER BY id ASC LIMIT 1"
-      ).get(sessionId, `%"id":"${messageId}"%`) as { id: number } | undefined;
+        "SELECT id FROM events WHERE session_id = ? AND type = 'user_message' AND json_extract(payload, '$.id') = ? ORDER BY id ASC LIMIT 1"
+      ).get(sessionId, messageId) as { id: number } | undefined;
 
       this.db.transaction(() => {
         this.prepare("DELETE FROM messages WHERE session_id = ? AND rowid > ?").run(sessionId, targetMsg.rowid);
         if (targetEvent) {
-          this.prepare("DELETE FROM events WHERE session_id = ? AND id > ?").run(sessionId, targetEvent.id);
+          this.prepare("DELETE FROM events WHERE session_id = ? AND id > ? AND (run_id IS NULL OR run_id NOT IN (SELECT id FROM runs WHERE status IN ('queued','running','stopping')))").run(sessionId, targetEvent.id);
         } else {
-          this.prepare("DELETE FROM events WHERE session_id = ? AND created_at >= ?").run(sessionId, targetMsg.created_at);
+          this.prepare("DELETE FROM events WHERE session_id = ? AND created_at >= ? AND (run_id IS NULL OR run_id NOT IN (SELECT id FROM runs WHERE status IN ('queued','running','stopping')))").run(sessionId, targetMsg.created_at);
         }
       })();
     }
   }
 
   // Event Operations
-  appendEvent(sessionId: string, type: string, payload: any): number {
+  appendEvent(sessionId: string, type: string, payload: any, runId?: string): number {
     const now = new Date().toISOString();
-    const payloadStr = typeof payload === "string" ? payload : JSON.stringify(payload);
-    const info = this.prepare("INSERT INTO events (session_id, type, payload, created_at) VALUES (?, ?, ?, ?)").run(
+    const value = runId ? { ...payload, run_id: runId } : payload;
+    const payloadStr = typeof value === "string" ? value : JSON.stringify(value);
+    const info = this.prepare("INSERT INTO events (session_id, type, payload, created_at, run_id) VALUES (?, ?, ?, ?, ?)").run(
       sessionId,
       type,
       payloadStr,
-      now
+      now,
+      runId || null
     );
     const id = Number(info.lastInsertRowid);
     eventBus.publish(sessionId, {
@@ -330,6 +431,7 @@ export class AppDatabase {
       session_id: sessionId,
       type,
       payload: payloadStr,
+      run_id: runId || null,
       created_at: now,
     });
     return id;
@@ -452,7 +554,8 @@ export class AppDatabase {
       if (Array.isArray(parsed)) {
         models = parsed
           .filter((m: any) => m && typeof m.id === "string")
-          .map((m: any) => ({ id: m.id, ...(typeof m.name === "string" ? { name: m.name } : {}) }));
+          .map((m: any) => ({ id: m.id, ...(typeof m.name === "string" ? { name: m.name } : {}),
+            ...(Number.isSafeInteger(m.context_window) && m.context_window > 0 ? { context_window: m.context_window } : {}) }));
       }
     } catch {}
     return { ...row, models, enabled: !!row.enabled };
@@ -486,6 +589,11 @@ export class AppDatabase {
 
   deleteProvider(id: string): void {
     this.prepare("DELETE FROM providers WHERE id = ?").run(id);
+  }
+
+  cacheProviderModels(provider: ProviderRecord, models: ProviderModel[]): boolean {
+    return this.prepare("UPDATE providers SET models = ? WHERE id = ? AND base_url = ? AND api_key = ?")
+      .run(JSON.stringify(models), provider.id, provider.base_url, provider.api_key).changes > 0;
   }
 
   // Settings kv — small app-level preferences (default provider/model).

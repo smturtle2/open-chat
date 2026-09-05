@@ -1,3 +1,4 @@
+import { apiFetch } from "../api";
 import React from "react";
 import { Terminal, Globe, FileCode, Brain, Maximize2, Minimize2, Loader2 } from "lucide-react";
 
@@ -45,7 +46,7 @@ export const StepListItem: React.FC<{ entry: StepEntry; idx: number; sessionId?:
     }
     setLoading(true);
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/outputs/${archiveId}`);
+      const res = await apiFetch(`/api/sessions/${sessionId}/outputs/${archiveId}`);
       const data = await res.json();
       setFull(typeof data.content === "string" ? data.content : "…unavailable");
     } catch {

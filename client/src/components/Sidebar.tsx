@@ -1,3 +1,4 @@
+import { apiFetch } from "../api";
 import React, { useEffect, useRef, useState } from "react";
 import { Bot, MessageCircle, PanelLeftClose, Plus, Trash2, Edit3, Settings, X, Search } from "lucide-react";
 import { useChatStore, type Session } from "../store/useChatStore";
@@ -409,7 +410,10 @@ export const Sidebar: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <span className="truncate">{s.title}</span>
+              <><span className="truncate">{s.title}</span>
+                {s.workspace_state === "archived" && <span className="text-[10px] text-zinc-400 shrink-0" title="접근하면 보관된 작업폴더를 복원합니다.">보관됨</span>}
+                {s.workspace_state === "missing" && <span className="text-[10px] text-zinc-400 shrink-0" title="작업폴더가 없습니다. 대화 기록은 남아 있습니다.">폴더 없음</span>}
+              </>
             )}
           </div>
         </div>
@@ -472,6 +476,7 @@ export const Sidebar: React.FC = () => {
             </span>
             <button
               onClick={() => setSidebarOpen(false)}
+              aria-label="사이드바 닫기"
               className="p-1 rounded text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
             >
               <PanelLeftClose className="w-3.5 h-3.5" />
@@ -568,7 +573,7 @@ const NewAgentSheet: React.FC<{ onClose: () => void; onCreate: (workdir: string)
     setChecking(true);
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/workdir/validate?path=${encodeURIComponent(trimmed)}`);
+        const res = await apiFetch(`/api/workdir/validate?path=${encodeURIComponent(trimmed)}`);
         setValidation(await res.json());
       } catch {
         setValidation({ ok: false, error: "검증 실패" });

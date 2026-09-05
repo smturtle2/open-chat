@@ -1,9 +1,9 @@
 // History assembly for the model-facing prompt.
 //
 // Mechanisms, all deterministic (no LLM in the loop):
-//   1. Whole-task cut — history is cut at task boundaries; the current task
-//      is kept verbatim, older tasks survive whole newest-first while they
-//      fit the token budget. Units are pair-safe: an assistant message
+//   1. The current request is pinned. Older tasks survive whole, newest-first,
+//      within the remaining budget. Long current tasks retain recent steps
+//      plus compact receipts. Units are pair-safe: an assistant message
 //      carrying tool_calls and its role:"tool" results always move together.
 //   2. Aging — tool observations older than `recentFullTools` collapse to a
 //      one-line receipt. The call record and its arguments stay visible; only
@@ -21,7 +21,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseObservation } from "./toolTypes.js";
+import { parseObservation, statusFromText, type ToolStatus } from "./toolTypes.js";
 import { CONFIG } from "../config.js";
 
 export type HistoryRecord = {
@@ -32,6 +32,8 @@ export type HistoryRecord = {
   tool_call_id?: string | null;
   name?: string | null;
   tool_calls?: any;
+  tool_status?: string | ToolStatus;
+  output_id?: number;
 };
 
 export interface HistoryOptions {
@@ -39,16 +41,16 @@ export interface HistoryOptions {
   budgetTokens?: number;
   recentFullTools?: number;
   maxRecords?: number;
-    /** Session workspace root — enables re-hydrating image observations. */
-    workspaceDir?: string;
-    /** Replay the current task's assistant reasoning as <think> blocks (default on). */
-    retainThought?: boolean;
-  }
+  /** Session workspace root — enables re-hydrating image observations. */
+  workspaceDir?: string;
+  /** Replay the current task's assistant reasoning as <think> blocks (default on). */
+  retainThought?: boolean;
+}
 
 // Script-aware token estimation. Measured ratios vary by tokenizer
 // (English prose ~4-5 chars/token; Hangul shatters to ~1 token per syllable
-// block, corpus-measured 1.8-2.5 chars/token). We take conservative values so
-// real usage never overshoots the budget:
+// block, corpus-measured 1.8-2.5 chars/token). These are estimates; exact
+// usage depends on the selected model's tokenizer:
 //   ASCII/Latin/code: 4 chars per token, CJK (Hangul/Han/Kana/fullwidth): 1.5.
 const CJK_CHAR = /[\u1100-\u11FF\u2E80-\u9FFF\uAC00-\uD7A3\u3040-\u30FF\u3400-\u4DBF\uF900-\uFAFF\uFF00-\uFFEF]/g;
 
@@ -105,7 +107,7 @@ function parseToolCalls(raw: any): any[] {
 // Size is an estimated token count (content + serialized tool_call arguments,
 // which are billed like any other prompt text). Units carrying current-task
 // reasoning also bill the replayed <think> body.
-type Unit = { recs: HistoryRecord[]; size: number; withThought?: boolean };
+type Unit = { recs: HistoryRecord[]; size: number; withThought?: boolean; source?: number };
 
 const OVERHEAD_TOKENS_PER_RECORD = Math.ceil(OVERHEAD_PER_RECORD / 4);
 
@@ -113,7 +115,7 @@ function recordTokens(r: HistoryRecord, withThought = false): number {
   const obs = typeof r.content === "string" ? parseObservation(r.content) : null;
   let n = OVERHEAD_TOKENS_PER_RECORD + estimateTokens(obs ? obs.text : r.content ?? "");
   if (r.tool_calls) n += estimateTokens(JSON.stringify(r.tool_calls));
-  if (withThought && r.thought) n += estimateTokens(r.thought);
+  if (withThought && r.thought) n += estimateTokens("<think>\n" + r.thought + "\n</think>\n\n");
   if (obs) n += IMAGE_TOKEN_ESTIMATE;
   return n;
 }
@@ -124,11 +126,11 @@ function unitSize(recs: HistoryRecord[], withThought = false): number {
   return n;
 }
 
-function statusHint(content: string): string {
-  if (/\[timed out after/.test(content)) return "timed out";
-  if (/\[interrupted after/.test(content)) return "interrupted";
-  if (/Tool Execution Error|^Error\b|exit code [1-9]|exit status [1-9]/m.test(content)) return "error";
-  return "ok";
+function statusHint(rec: HistoryRecord): string {
+  let status: ToolStatus | undefined;
+  try { status = typeof rec.tool_status === "string" ? JSON.parse(rec.tool_status) : rec.tool_status; } catch {}
+  status ??= statusFromText(rec.content ?? "");
+  return status.timedOut ? "timed out" : status.interrupted ? "interrupted" : status.ok ? "ok" : "error";
 }
 
 const OUTPUT_ID_RE = /output #(\d+)/;
@@ -139,9 +141,22 @@ export function receiptFor(rec: HistoryRecord): string {
   if (obs) return `[${name} · ok · ${obs.text}]`;
   const content = rec.content ?? "";
   const kb = content.length >= 1024 ? `${(content.length / 1024).toFixed(1)}KB` : `${content.length}B`;
-  const id = content.match(OUTPUT_ID_RE)?.[1];
+  const id = rec.output_id ?? content.match(OUTPUT_ID_RE)?.[1];
   const tail = id ? ` · full copy: read_output {"id": ${id}}` : "";
-  return `[${name} · ${statusHint(content)} · ${kb}${tail}]`;
+  return `[${name} · ${statusHint(rec)} · ${kb}${tail}]`;
+}
+
+
+function clipTokens(text: string, limit: number): string {
+  if (limit <= 0) return "";
+  if (estimateTokens(text) <= limit) return text;
+  let low = 0, high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (estimateTokens(text.slice(0, mid) + "…") <= limit) low = mid;
+    else high = mid - 1;
+  }
+  return text.slice(0, low) + "…";
 }
 
 export function buildHistory(
@@ -154,120 +169,110 @@ export function buildHistory(
   const workspaceDir = opts.workspaceDir;
   const retainThought = opts.retainThought !== false;
 
-  // Current-task membership by record identity: everything from the last
-  // user record onward. With no user record at all (degenerate session),
-  // every record is treated as current — matching the keep-everything rule.
   let lastUserIdx = -1;
   for (let i = 0; i < records.length; i++) if (records[i].role === "user") lastUserIdx = i;
-  const currentTask = new Set<HistoryRecord>(
-    lastUserIdx === -1 ? records : records.slice(lastUserIdx)
-  );
-
-  // ---- Pass 1: group records into pair-safe units -------------------------
+  const currentTask = new Set(lastUserIdx < 0 ? records : records.slice(lastUserIdx));
   const units: Unit[] = [];
   let openExecUnit: Unit | null = null;
-
   for (const r of records) {
-    const cur = retainThought && currentTask.has(r);
-    if (r.role === "user") {
-      openExecUnit = null;
-      units.push({ recs: [r], size: unitSize([r]) });
-    } else if (r.role === "assistant") {
-      const calls = parseToolCalls(r.tool_calls);
-      if (calls.length > 0) {
-        openExecUnit = { recs: [r], size: unitSize([r], cur), withThought: cur };
-        units.push(openExecUnit);
-      } else {
-        openExecUnit = null;
-        units.push({ recs: [r], size: unitSize([r], cur), withThought: cur });
-      }
-    } else if (r.role === "tool") {
-      if (openExecUnit) {
-        // Result belongs to the open tool-call block — same unit, always.
-        openExecUnit.recs.push(r);
-        openExecUnit.size += unitSize([r]);
-      }
-      // Orphan result (no owning call in view): dropped silently. This
-      // generalizes the old "strip leading tool records" rule.
+    const withThought = retainThought && currentTask.has(r);
+    if (r.role === "user" || r.role === "assistant") {
+      const unit: Unit = { recs: [r], size: 0, withThought, source: units.length };
+      units.push(unit);
+      openExecUnit = r.role === "assistant" && parseToolCalls(r.tool_calls).length ? unit : null;
+    } else if (r.role === "tool" && openExecUnit) {
+      const ids = parseToolCalls(openExecUnit.recs[0].tool_calls).map((call) => call.id);
+      if (ids.includes(r.tool_call_id)) openExecUnit.recs.push(r);
     } else {
-      openExecUnit = null; // unknown roles break pairing context
+      openExecUnit = null;
     }
   }
 
-  for (const u of units) u.size = unitSize(u.recs, u.withThought ?? false);
-
-  // ---- Pass 2: whole-TASK retention ---------------------------------------
-  // History is cut at task boundaries, never mid-story. A task = one user
-  // message plus everything the agent did until the next user message. The
-  // CURRENT task (last user message onward) is kept verbatim; older tasks
-  // are kept complete, newest-first, while their total size fits the token
-  // budget. The first older task that does not fit — and everything older
-  // than it — disappears together, so the replayed story is always a
-  // contiguous run of complete exchanges. (Partial per-unit keeps made the
-  // model see orphan answers whose questions were gone.)
-  const isUserUnit = (u: Unit) => u.recs[0]?.role === "user";
-  const taskStarts: number[] = [];
-  units.forEach((u, i) => {
-    if (isUserUnit(u)) taskStarts.push(i);
-  });
-
-  const keep = new Array<boolean>(units.length).fill(false);
-  let keptCount = 0;
-
-  if (taskStarts.length === 0) {
-    // No user message at all (degenerate): keep everything.
-    for (let i = 0; i < units.length; i++) { keep[i] = true; keptCount++; }
-  } else {
-    // Preamble before the first user task: always kept.
-    for (let i = 0; i < taskStarts[0]; i++) { keep[i] = true; keptCount++; }
-
-    // Current task: last taskStart → end, verbatim.
-    const currentStart = taskStarts[taskStarts.length - 1];
-    for (let i = currentStart; i < units.length; i++) { keep[i] = true; keptCount++; }
-
-    // Older tasks, newest-first, whole-or-nothing against the budget.
-    let spent = 0;
-    for (let t = taskStarts.length - 2; t >= 0; t--) {
-      const startIdx = taskStarts[t];
-      const endIdx = taskStarts[t + 1] - 1;
-      let size = 0;
-      for (let i = startIdx; i <= endIdx; i++) size += units[i].size;
-      if (spent + size > budgetTokens) break;
-      for (let i = startIdx; i <= endIdx; i++) { keep[i] = true; keptCount++; }
-      spent += size;
-    }
-  }
-  const keptUnits = units.filter((_, i) => keep[i]);
-
-  // ---- Pass 3: aging — collapse old tool observations to receipts ---------
-  let toolsSeen = 0;
-  let toolsCollapsed = 0;
-  for (let i = keptUnits.length - 1; i >= 0; i--) {
-    for (let j = keptUnits[i].recs.length - 1; j >= 0; j--) {
-      const r = keptUnits[i].recs[j];
-      if (r.role !== "tool") continue;
-      toolsSeen++;
-      if (toolsSeen > recentFullTools) {
-        // Never mutate the caller's records — swap in a receipt copy.
-        keptUnits[i].recs[j] = { ...r, content: receiptFor(r) };
-        toolsCollapsed++;
+  // A server restart can leave an assistant call without its result. Restore
+  // protocol pairing without pretending that the interrupted tool succeeded.
+  for (const unit of units) {
+    for (const call of parseToolCalls(unit.recs[0].tool_calls)) {
+      if (!unit.recs.some((r) => r.role === "tool" && r.tool_call_id === call.id)) {
+        unit.recs.push({ role: "tool", tool_call_id: call.id, name: call.function?.name || call.name,
+          content: "[Tool interrupted before its result was recorded. Verify the current state before retrying.]",
+          tool_status: { ok: false, interrupted: true } });
       }
     }
+    unit.size = unitSize(unit.recs, unit.withThought);
+  }
+  const tokensIn = units.reduce((sum, unit) => sum + unit.size, 0);
+  const collapsed = new Set<HistoryRecord>();
+  let toolsSeen = 0;
+  for (let i = units.length - 1; i >= 0; i--) {
+    const unit = units[i];
+    unit.recs = unit.recs.map((r) => ({ ...r }));
+    for (let j = unit.recs.length - 1; j >= 0; j--) {
+      const r = unit.recs[j];
+      if (r.role === "tool" && ++toolsSeen > recentFullTools) {
+        r.content = receiptFor(r);
+        collapsed.add(r);
+      }
+    }
+    unit.size = unitSize(unit.recs, unit.withThought);
   }
 
-  // ---- Pass 4: hard ceiling on record count (atomic unit aware) ------------
-  // Slice by whole units from newest to oldest so assistant tool_calls and tool results are never split
-  let totalRecs = 0;
-  const unitsUnderCeiling: typeof keptUnits = [];
-  for (let i = keptUnits.length - 1; i >= 0; i--) {
-    const unit = keptUnits[i];
-    if (unitsUnderCeiling.length > 0 && totalRecs + unit.recs.length > maxRecords) {
-      break;
-    }
-    unitsUnderCeiling.unshift(unit);
-    totalRecs += unit.recs.length;
+  const taskStarts = units.flatMap((u, i) => u.recs[0].role === "user" ? [i] : []);
+  const currentStart = taskStarts.at(-1) ?? 0;
+  const current = units.slice(currentStart);
+  const root = current[0]?.recs[0].role === "user" ? current[0] : undefined;
+  if (root && root.size > budgetTokens) {
+    throw new Error("현재 요청이 모델의 입력 예산을 초과합니다. 긴 자료는 파일로 첨부하거나 요청을 나누어 주세요.");
   }
-  const sliced = unitsUnderCeiling.flatMap((u) => u.recs);
+  const count = (items: Unit[]) => items.reduce((n, u) => n + u.recs.length, 0);
+  const cost = (items: Unit[]) => items.reduce((n, u) => n + u.size, 0);
+  let keptUnits = [...current];
+
+  if (cost(keptUnits) > budgetTokens || count(keptUnits) > maxRecords) {
+    const pinned = root ? [root] : [];
+    const candidates = root ? current.slice(1) : current;
+    const spareTokens = budgetTokens - cost(pinned);
+    const spareRecords = maxRecords - count(pinned);
+    const summaryReserve = spareRecords > 0 ? Math.min(512, Math.floor(spareTokens / 3)) : 0;
+    const recent: Unit[] = [];
+    let spent = cost(pinned) + summaryReserve;
+    let usedRecords = count(pinned) + (summaryReserve > OVERHEAD_TOKENS_PER_RECORD ? 1 : 0);
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const unit = candidates[i];
+      if (spent + unit.size > budgetTokens || usedRecords + unit.recs.length > maxRecords) break;
+      recent.unshift(unit);
+      spent += unit.size;
+      usedRecords += unit.recs.length;
+    }
+    const omitted = candidates.slice(0, candidates.length - recent.length);
+    keptUnits = [...pinned, ...recent];
+    const remainingTokens = budgetTokens - cost(keptUnits);
+    if (omitted.length && count(keptUnits) < maxRecords && remainingTokens > OVERHEAD_TOKENS_PER_RECORD + 8) {
+      const details = omitted.slice().reverse().flatMap((unit) => {
+        const receipts = unit.recs.filter((r) => r.role === "tool").map(receiptFor);
+        return receipts.length ? receipts : [String(unit.recs[0].content || "").slice(0, 240)];
+      }).filter(Boolean).join("\n");
+      const text = "[Earlier steps compacted; newest first. The original request is preserved.]\n" + details;
+      const record: HistoryRecord = { role: "assistant", content: clipTokens(text, Math.min(remainingTokens, 512) - OVERHEAD_TOKENS_PER_RECORD) };
+      const summary: Unit = { recs: [record], size: unitSize([record]) };
+      keptUnits = [...pinned, summary, ...recent];
+    }
+  }
+
+  // Older tasks are all-or-nothing. Charge the retained current task first.
+  let spent = cost(keptUnits);
+  let usedRecords = count(keptUnits);
+  for (let t = taskStarts.length - 2; t >= 0; t--) {
+    const task = units.slice(taskStarts[t], taskStarts[t + 1]);
+    if (spent + cost(task) > budgetTokens || usedRecords + count(task) > maxRecords) break;
+    keptUnits.unshift(...task);
+    spent += cost(task);
+    usedRecords += count(task);
+  }
+
+  const sliced = keptUnits.flatMap((unit) => unit.recs);
+  const thoughtRecords = new Set(keptUnits.filter((u) => u.withThought).flatMap((u) => u.recs));
+  const keptCount = keptUnits.filter((u) => u.source !== undefined).length;
+  const toolsCollapsed = sliced.filter((r) => collapsed.has(r)).length;
 
   // ---- Pass 5: emit API-shaped messages -----------------------------------
   const messages: BuiltMessage[] = [];
@@ -277,7 +282,7 @@ export function buildHistory(
     } else if (r.role === "assistant") {
       const calls = parseToolCalls(r.tool_calls);
       let body = r.content ?? "";
-      if (retainThought && currentTask.has(r)) {
+      if (retainThought && thoughtRecords.has(r)) {
         // Replay the live task's own reasoning so the chain continues.
         // Stray tags inside stored thoughts are stripped — a leaked
         // </think> would end the block early and confuse the model.
@@ -308,7 +313,7 @@ export function buildHistory(
         // volume via its container path (/opt/skills/...). If the file has
         // vanished, degrade to a plain-text note instead of failing.
         try {
-          const skillsMount = "/opt/skills";
+          const skillsMount = "/opt/skills/";
           const absRaw = obs.path?.startsWith(skillsMount)
             ? path.join(CONFIG.SKILLS_DIR, obs.path.slice(skillsMount.length))
             : path.resolve(workspaceDir, obs.path ?? "");
@@ -335,7 +340,6 @@ export function buildHistory(
     }
   }
 
-  const tokensIn = units.reduce((a, u) => a + u.size, 0);
   const tokensKept = keptUnits.reduce((a, u) => a + u.size, 0);
   return {
     messages,

@@ -68,7 +68,7 @@ fi
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   echo -e "  ${GREEN}✓${NC} Docker Engine running (Containerized Sandbox available)"
 else
-  echo -e "  ${YELLOW}!${NC} Docker daemon is not active. OpenChat will operate in Host Agent mode."
+  echo -e "  ${YELLOW}!${NC} Docker daemon is not active. Chat command and web tools require Docker. Agent mode remains available."
 fi
 
 # 3. Determine target directory
@@ -110,14 +110,11 @@ fi
 # 4. Install Dependencies (Root & Client)
 echo -e "\n${BOLD}[4/7] Installing dependencies & building frontend...${NC}"
 echo "  📦 Installing backend and core dependencies..."
-npm install --no-audit --no-fund
-
-echo "  📦 Installing client frontend dependencies..."
-(cd client && npm install --no-audit --no-fund)
+npm ci --no-audit --no-fund
 echo -e "  ${GREEN}✓${NC} Dependencies installed successfully"
 
 echo "  🔨 Building web application..."
-(cd client && npm run build)
+npm run build
 echo -e "  ${GREEN}✓${NC} Frontend built successfully"
 
 # 5. Configure Python host tools if python3 is available
@@ -155,7 +152,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     fi
   fi
 else
-  echo -e "  ${BLUE}ℹ${NC} Docker unavailable — running in host agent mode"
+  echo -e "  ${BLUE}ℹ${NC} Docker unavailable — Chat command and web tools will report an error"
 fi
 
 # 7. Environment configuration & Global CLI Launcher
@@ -194,6 +191,7 @@ usage() {
   echo ""
   echo "Usage:"
   echo "  openchat                   Start OpenChat in foreground"
+  echo "  openchat token             Show the browser access key"
   echo "  openchat service <command> Manage background systemd service"
   echo ""
   echo "Service Commands:"
@@ -208,6 +206,9 @@ usage() {
 }
 
 case "${1:-}" in
+  token)
+    cd "$APP_DIR" && exec npm run --silent auth:token
+    ;;
   service)
     subcmd="${2:-}"
     case "$subcmd" in
@@ -305,6 +306,7 @@ echo -e "${BOLD}${GREEN}   🎉 OpenChat setup & build completed successfully!  
 echo -e "${BOLD}${GREEN}=======================================================${NC}"
 
 echo -e "\n${BOLD}How to use OpenChat:${NC}"
+echo -e "  • Show browser access key:  ${BOLD}${GREEN}openchat token${NC}"
 echo -e "  • Start in foreground:      ${BOLD}${GREEN}openchat${NC}"
 echo -e "  • Register system service:  ${BOLD}${BLUE}openchat service install${NC}"
 echo -e "  • Check service status:     ${BOLD}${BLUE}openchat service status${NC}"

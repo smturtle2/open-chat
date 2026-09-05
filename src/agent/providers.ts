@@ -1,4 +1,5 @@
 import { CONFIG } from "../config.js";
+import { isIP } from "node:net";
 import { db, type ProviderModel, type ProviderRecord } from "../db/database.js";
 
 // Provider registry: multi-endpoint LLM configuration (opencode.json-style)
@@ -20,6 +21,29 @@ export interface ResolvedEndpoint {
   model: string;
   providerId: string | null;
   protocol: ProtocolType;
+  contextWindow: number;
+}
+
+export function isProviderUsable(provider: ProviderRecord): boolean {
+  if (!provider.enabled) return false;
+  if (provider.api_key) return true;
+  try {
+    const hostname = new URL(provider.base_url).hostname;
+    return hostname === "localhost" || hostname === "[::1]" || hostname === "0.0.0.0" || (isIP(hostname) === 4 && hostname.startsWith("127."));
+  } catch {
+    return false;
+  }
+}
+
+export function publicProvider(p: ProviderRecord) {
+  return {
+    id: p.id, name: p.name, base_url: p.base_url, enabled: p.enabled, models: p.models,
+    has_key: !!p.api_key, key_hint: p.api_key ? `…${p.api_key.slice(-4)}` : "",
+  };
+}
+
+function contextWindowFor(provider: ProviderRecord, model: string): number {
+  return provider.models.find((m) => m.id === model)?.context_window || CONFIG.CONTEXT_WINDOW_TOKENS;
 }
 
 export interface ProviderPreset {
@@ -103,7 +127,9 @@ function normalizeModels(models: unknown): ProviderModel[] {
     const name = typeof (m as any).name === "string" && (m as any).name.trim() && (m as any).name !== id
       ? (m as any).name.trim()
       : undefined;
-    out.push(name ? { id, name } : { id });
+    const rawWindow = Number((m as any).context_window ?? (m as any).context_length ?? (m as any).top_provider?.context_length);
+    const context_window = Number.isSafeInteger(rawWindow) && rawWindow > 0 ? rawWindow : undefined;
+    out.push({ id, ...(name ? { name } : {}), ...(context_window ? { context_window } : {}) });
   }
   return out.slice(0, 1000);
 }
@@ -201,10 +227,7 @@ export function resolveEndpoint(opts: { provider?: string | null; model?: string
 
   for (const cand of candidates) {
     const provider = cand.providerId ? db.getProvider(cand.providerId) : undefined;
-    if (!provider || !provider.enabled) continue;
-    // For non-localhost endpoints, require an API key
-    const isLocal = provider.base_url.includes("localhost") || provider.base_url.includes("127.0.0.1") || provider.base_url.includes("0.0.0.0");
-    if (!provider.api_key && !isLocal) continue;
+    if (!provider || !isProviderUsable(provider)) continue;
 
     const model = cand.model || pickDefaultModel(provider);
     if (!model) continue;
@@ -214,14 +237,13 @@ export function resolveEndpoint(opts: { provider?: string | null; model?: string
       model,
       providerId: provider.id,
       protocol: resolveProtocol(provider.base_url, model),
+      contextWindow: contextWindowFor(provider, model),
     };
   }
 
   // Last resort: first enabled provider.
   for (const provider of db.listProviders()) {
-    if (!provider.enabled) continue;
-    const isLocal = provider.base_url.includes("localhost") || provider.base_url.includes("127.0.0.1") || provider.base_url.includes("0.0.0.0");
-    if (!provider.api_key && !isLocal) continue;
+    if (!isProviderUsable(provider)) continue;
 
     const model = opts.model || defaults.default_model || pickDefaultModel(provider);
     if (!model) continue;
@@ -231,6 +253,7 @@ export function resolveEndpoint(opts: { provider?: string | null; model?: string
       model,
       providerId: provider.id,
       protocol: resolveProtocol(provider.base_url, model),
+      contextWindow: contextWindowFor(provider, model),
     };
   }
 
@@ -242,6 +265,7 @@ export function resolveEndpoint(opts: { provider?: string | null; model?: string
     model: fallbackModel,
     providerId: null,
     protocol: resolveProtocol(CONFIG.LLM_BASE_URL, fallbackModel),
+    contextWindow: CONFIG.CONTEXT_WINDOW_TOKENS,
   };
 }
 
@@ -266,7 +290,7 @@ export async function fetchUpstreamModels(baseUrl: string, apiKey: string): Prom
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
     const res = await fetch(`${baseUrl}/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -288,9 +312,8 @@ async function modelsFor(provider: ProviderRecord): Promise<ProviderModel[]> {
   if (cached && Date.now() - cached.fetchedAt < MODEL_TTL_MS) return cached.models;
   try {
     const models = await fetchUpstreamModels(provider.base_url, provider.api_key);
-    if (models.length > 0) {
+    if (models.length > 0 && db.cacheProviderModels(provider, models)) {
       modelMemory.set(provider.id, { fetchedAt: Date.now(), models });
-      db.upsertProvider({ ...provider, models }); // persist as fallback cache
       return models;
     }
   } catch {
@@ -303,7 +326,7 @@ async function modelsFor(provider: ProviderRecord): Promise<ProviderModel[]> {
 /** Warm the catalog cache after credential changes (fire-and-forget helper). */
 export function warmModelCache(id: string): void {
   const provider = db.getProvider(id);
-  if (!provider?.enabled || !provider.api_key) return;
+  if (!provider || !isProviderUsable(provider)) return;
   void modelsFor(provider).catch(() => undefined);
 }
 
@@ -317,7 +340,7 @@ export async function listModelGroups(): Promise<ModelGroup[]> {
   const groups = await Promise.all(
     db
       .listProviders()
-      .filter((p) => p.enabled && p.api_key)
+      .filter(isProviderUsable)
       .map(async (p) => ({ provider_id: p.id, provider_name: p.name, models: await modelsFor(p) }))
   );
   return groups.filter((g) => g.models.length > 0);

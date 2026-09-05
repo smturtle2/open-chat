@@ -23,7 +23,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "oc-units-"));
 process.env.OPENCHAT_DB_PATH = path.join(tmp, "test.db");
 process.env.OPENCHAT_WORKSPACE_ROOT = path.join(tmp, "workspace");
 process.env.OPENCHAT_SKILLS_DIR = path.join(tmp, "skills");
-delete process.env.LLM_API_KEY;
+process.env.LLM_API_KEY = "";
 
 const { seedBootstrapProvider, createProvider, updateProvider, deleteProvider, resolveEndpoint, getSettings, updateSettings, PROVIDER_PRESETS, fetchUpstreamModels, listModelGroups } = await import("../src/agent/providers.js");
 const database = await import("../src/db/database.js");
@@ -193,6 +193,5 @@ async function main() {
 }
 
 await main();
-
 
 

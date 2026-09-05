@@ -1,20 +1,22 @@
 import path from "node:path";
 import fs from "node:fs";
 import { CONFIG } from "../config.js";
-import { db } from "../db/database.js";
+import { db, type RunOutcome } from "../db/database.js";
 import { tools, type ToolContext, serializeObservation } from "./tools.js";
-import { extractJsonObjects, parseToolArguments } from "./jsonUtils.js";
-import { buildHistory } from "./context.js";
+import { parseSingleToolArguments as parseToolArguments } from "./jsonUtils.js";
+import { buildHistory, estimateTokens } from "./context.js";
 import { resolveEndpoint } from "./providers.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { chatWorkspaceDir, sessionRoot } from "./sessionPaths.js";
 import { getEndpointUrl, buildRequestBody, parseStreamData } from "./protocols.js";
+import { ToolCallAssembler } from "./toolCalls.js";
+import { scheduleTools } from "./toolScheduler.js";
+import { statusFromText, type ToolStatus } from "./toolTypes.js";
+import { setTimeout as delay } from "node:timers/promises";
 
-type StreamingToolCall = {
-  id: string;
-  name: string;
-  arguments: string;
-};
+async function waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  await delay(ms, undefined, { signal }).catch(() => {});
+}
 
 function generateCallId(): string {
   return "call_" + Math.random().toString(36).substring(2, 12);
@@ -34,8 +36,8 @@ export function getToolCallSignature(name: string, args?: Record<string, any>): 
 export class ToolCircuitBreaker {
   private history: Array<{ signature: string; isError: boolean }> = [];
 
-  public intercept(name: string, args: Record<string, any> | undefined, observation: string): string {
-    const isError = /Tool Execution Error|^Error\b|exit code [1-9]|exit status [1-9]|No such file|Failed/i.test(observation);
+  public intercept(name: string, args: Record<string, any> | undefined, observation: string, status?: ToolStatus): string {
+    const isError = !(status ?? statusFromText(observation)).ok;
     const signature = getToolCallSignature(name, args);
     this.history.push({ signature, isError });
     if (this.history.length > 10) this.history.shift();
@@ -46,7 +48,7 @@ export class ToolCircuitBreaker {
     for (let i = this.history.length - 1; i >= 0; i--) {
       if (this.history[i].signature === signature && this.history[i].isError) {
         consecutiveFailures++;
-      } else {
+      } else if (this.history[i].signature === signature) {
         break;
       }
     }
@@ -64,7 +66,7 @@ export class ToolCircuitBreaker {
     for (let i = this.history.length - 1; i >= 0; i--) {
       if (this.history[i].signature === signature && this.history[i].isError) {
         consecutiveFailures++;
-      } else {
+      } else if (this.history[i].signature === signature) {
         break;
       }
     }
@@ -73,7 +75,7 @@ export class ToolCircuitBreaker {
 }
 
 export class AgentHarness {
-  async runAutonomousLoop(sessionId: string, userPrompt: string, signal?: AbortSignal, model?: string, attachmentIds: string[] = [], clientMsgId?: string) {
+  async runAutonomousLoop(sessionId: string, userPrompt: string, signal?: AbortSignal, model?: string, attachmentIds: string[] = [], clientMsgId?: string, runId?: string): Promise<RunOutcome> {
     // 1. Record new user message — plain text only. Attachment markers are a
     // PROMPT-construction concern: they get appended in prepareMessages from
     // the attachments table, never stored in the transcript the user sees.
@@ -85,22 +87,25 @@ export class AgentHarness {
       role: "user",
       content: userPrompt,
     });
+    db.touchSession(sessionId);
     db.appendEvent(sessionId, "user_message", {
       id: userMsgId,
       content: userPrompt,
       attachments: claimed.map((a) => ({ kind: a.kind, name: a.name, path: a.path, size: a.size, mime: a.mime })),
-    });
+    }, runId);
 
     // 2. Execute assistant loop
-    await this.runAssistantTurn(sessionId, signal, model);
+    return this.runAssistantTurn(sessionId, signal, model, runId);
   }
 
-  async runAssistantTurn(sessionId: string, signal?: AbortSignal, model?: string) {
-    db.updateSessionStatus(sessionId, "running");
+  async runAssistantTurn(sessionId: string, signal?: AbortSignal, model?: string, runId?: string): Promise<RunOutcome> {
+    if (!runId) db.updateSessionStatus(sessionId, "running");
+    const emit = (type: string, payload: any) => db.appendEvent(sessionId, type, payload, runId);
+    let outcome: RunOutcome = "completed";
 
     const session = db.getSession(sessionId);
     if (!session) {
-      return;
+      return "failed";
     }
     // Agent sessions work in a real host directory; chat sessions get their
     // disposable workspace. Everything downstream (tools, prompt, history)
@@ -108,9 +113,10 @@ export class AgentHarness {
     const sessionRootDir = sessionRoot(session);
     if (!fs.existsSync(sessionRootDir)) {
       if (session.mode === "agent") {
-        db.appendEvent(sessionId, "error", { message: `작업 디렉토리가 존재하지 않습니다: ${session.workdir}` });
-        db.updateSessionStatus(sessionId, "idle");
-        return;
+        outcome = "failed";
+        emit("error", { message: `작업 디렉토리가 존재하지 않습니다: ${session.workdir}` });
+        if (!runId) db.updateSessionStatus(sessionId, "idle");
+        return "failed";
       }
       chatWorkspaceDir(sessionId);
     }
@@ -136,17 +142,17 @@ export class AgentHarness {
     const circuitBreaker = new ToolCircuitBreaker();
 
     // Autonomous loop: runs until the model delivers a final answer without tool calls or is aborted.
-    while (true) {
+    turnLoop: while (true) {
       if (signal?.aborted) {
-        db.appendEvent(sessionId, "task_interrupted", { message: "Task stopped by user" });
+        emit("task_interrupted", { message: "Task stopped by user" });
         break;
       }
 
       turn++;
       const rawMessages = db.getMessages(sessionId);
-      const messagesForApi = await this.prepareMessages(session, sessionRootDir, rawMessages);
+      const messagesForApi = await this.prepareMessages(session, sessionRootDir, rawMessages, endpoint.contextWindow);
 
-      db.appendEvent(sessionId, "turn_started", { turn });
+      emit("turn_started", { turn });
 
       let currentThought = "";
       let currentContent = "";
@@ -162,11 +168,11 @@ export class AgentHarness {
       const flushDeltas = () => {
         if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
         if (pendingThoughtDelta) {
-          db.appendEvent(sessionId, "thought_delta", { delta: pendingThoughtDelta });
+          emit("thought_delta", { delta: pendingThoughtDelta });
           pendingThoughtDelta = "";
         }
         if (pendingContentDelta) {
-          db.appendEvent(sessionId, "content_delta", { delta: pendingContentDelta });
+          emit("content_delta", { delta: pendingContentDelta });
           pendingContentDelta = "";
         }
       };
@@ -180,10 +186,7 @@ export class AgentHarness {
         currentContent += d;
         if (!flushTimer) flushTimer = setTimeout(flushDeltas, 50);
       };
-      const toolCallsList: StreamingToolCall[] = [];
-      const toolNameSequence: string[] = [];
-      let orphanArgBuffer = "";
-      let activeToolIndex = 0;
+      const assembler = new ToolCallAssembler();
 
       let response: Response | null = null;
       let attempt = 0;
@@ -235,6 +238,7 @@ export class AgentHarness {
 
           console.warn(`[Harness] API attempt ${attempt} failed with status ${response.status}: ${lastErrorMessage}`);
 
+          if (![408, 409, 429, 402].includes(response.status) && response.status < 500) break;
           if (attempt < 3 && !signal?.aborted) {
             // Check for Retry-After header (common in 429 and 402 in_flight_budget_exhausted)
             let waitMs = attempt * 1500;
@@ -255,34 +259,35 @@ export class AgentHarness {
 
             const waitSec = Math.round(waitMs / 1000);
             if (response.status === 429 || response.status === 402) {
-              db.appendEvent(sessionId, "empty_response_retry", {
+              emit("empty_response_retry", {
                 message: `요청 대기 중 (${waitSec}초 후 재시도)... ${lastErrorMessage ? `[${lastErrorMessage.slice(0, 80)}]` : ""}`,
               });
             }
 
-            await new Promise((r) => setTimeout(r, waitMs));
+            await waitForRetry(waitMs, signal);
           }
         } catch (fetchErr: any) {
           if (signal?.aborted) break;
           lastErrorMessage = fetchErr.message || "Network fetch error";
           console.warn(`[Harness] Fetch attempt ${attempt} error: ${lastErrorMessage}`);
           if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, attempt * 1500));
+            await waitForRetry(attempt * 1500, signal);
           }
         }
       }
 
       if (!response || !response.ok || !response.body) {
         consecutiveErrors++;
-        if (consecutiveErrors >= maxConsecutiveErrors) {
+        if (consecutiveErrors >= maxConsecutiveErrors || (response && response.status < 500 && ![408, 409, 429, 402].includes(response.status))) {
           const finalErrMsg = lastErrorMessage
             ? `LLM API 요청 실패: ${lastErrorMessage}`
             : "Failed to connect to LLM API after multiple attempts.";
-          db.appendEvent(sessionId, "error", { message: finalErrMsg });
-          db.appendEvent(sessionId, "turn_completed", { turn });
+          outcome = "failed";
+          emit("error", { message: finalErrMsg });
+          emit("turn_completed", { turn });
           break;
         }
-        await new Promise((r) => setTimeout(r, 2000));
+        await waitForRetry(2000, signal);
         continue;
       }
 
@@ -313,11 +318,6 @@ export class AgentHarness {
             try {
               const event = parseStreamData(endpoint.protocol, dataStr);
               if (!event) continue;
-
-              if (event.done) {
-                void reader.cancel().catch(() => {});
-                break streamLoop;
-              }
 
               // 1. Dedicated thinking delta
               if (event.thought) {
@@ -397,53 +397,11 @@ export class AgentHarness {
               // 3. Tool Calls delta - Strict ID & Index Pointer Isolation
               const incomingCalls = event.toolCalls || (event.toolCall ? [event.toolCall] : []);
               for (const tc of incomingCalls) {
-                if (tc.name && toolNameSequence[toolNameSequence.length - 1] !== tc.name) {
-                  toolNameSequence.push(tc.name);
-                }
-
-                let currentTool: StreamingToolCall | undefined;
-
-                if (tc.id) {
-                  const existingIdx = toolCallsList.findIndex((t) => t.id === tc.id);
-                  if (existingIdx === -1) {
-                    toolCallsList.push({
-                      id: tc.id,
-                      name: tc.name || "",
-                      arguments: "",
-                    });
-                    activeToolIndex = toolCallsList.length - 1;
-                  } else {
-                    activeToolIndex = existingIdx;
-                  }
-                  currentTool = toolCallsList[activeToolIndex];
-                } else if (typeof tc.index === "number") {
-                  activeToolIndex = tc.index;
-                  if (!toolCallsList[activeToolIndex]) {
-                    toolCallsList[activeToolIndex] = {
-                      id: generateCallId(),
-                      name: tc.name || "",
-                      arguments: "",
-                    };
-                  }
-                  currentTool = toolCallsList[activeToolIndex];
-                } else {
-                  currentTool = toolCallsList[activeToolIndex] || toolCallsList[toolCallsList.length - 1];
-                }
-
-                if (currentTool) {
-                  if (orphanArgBuffer) {
-                    currentTool.arguments += orphanArgBuffer;
-                    orphanArgBuffer = "";
-                  }
-                  if (tc.name && !currentTool.name) {
-                    currentTool.name = tc.name;
-                  }
-                  if (tc.argumentsDelta) {
-                    currentTool.arguments += tc.argumentsDelta;
-                  }
-                } else if (tc.argumentsDelta) {
-                  orphanArgBuffer += tc.argumentsDelta;
-                }
+                assembler.add(tc);
+              }
+              if (event.done) {
+                void reader.cancel().catch(() => {});
+                break streamLoop;
               }
             } catch {}
           }
@@ -469,70 +427,32 @@ export class AgentHarness {
               content: partialContent || "",
               thought: partialThought || undefined,
             });
-            db.appendEvent(sessionId, "assistant_message", {
+            emit("assistant_message", {
               id: assistantMsgId,
               content: partialContent || "",
               thought: partialThought || undefined,
             });
           }
-          db.appendEvent(sessionId, "task_interrupted", { message: "Task stopped by user" });
+          emit("task_interrupted", { message: "Task stopped by user" });
           break;
         }
         console.error(`[Harness] Stream error during turn ${turn}:`, err);
+        outcome = "failed";
+        emit("error", { message: "모델 응답 스트림이 중단되었습니다. 다시 시도해 주세요." });
+        break turnLoop;
       }
 
-      // ---- Finalize tool calls: lenient parse, repair, and de-multiplex ----
-      const entries = toolCallsList.filter((tc) => tc.name || (tc.arguments && tc.arguments.trim()));
-
-      const perEntryObjects: any[][] = entries.map((e) =>
-        e.arguments && e.arguments.trim() ? extractJsonObjects(e.arguments) : []
-      );
-      const totalObjects = perEntryObjects.reduce((sum, arr) => sum + arr.length, 0);
-
-      type FinalizedCall = { id: string; name: string; args: Record<string, any> };
-      const finalizedCalls: FinalizedCall[] = [];
-
-      const fallbackName = (slot: number): string =>
-        toolNameSequence[slot] || entries[0]?.name || "bash";
-
-      const asArgsObject = (value: any): Record<string, any> =>
-        value !== undefined && typeof value === "object" && !Array.isArray(value)
-          ? value
-          : value === undefined
-            ? {}
-            : { raw: String(value) };
-
-      // Concatenation detection: either more parsed objects than streaming slots,
-      // or one slot swallowed several objects while another slot got none.
-      const hasSwallowedSplit =
-        perEntryObjects.some((a) => a.length > 1) && perEntryObjects.some((a) => a.length === 0);
-
-      if (entries.length === 0) {
-        // No usable tool calls detected.
-      } else if (totalObjects > entries.length || (hasSwallowedSplit && totalObjects >= 2)) {
-        // Provider concatenated parallel calls into fewer slots: flatten every
-        // parsed object in arrival order and rebuild one call per object.
-        const flatObjects = perEntryObjects.flat();
-        flatObjects.forEach((obj, idx) => {
-          finalizedCalls.push({
-            id: idx === 0 ? entries[0].id || generateCallId() : generateCallId(),
-            name: toolNameSequence[idx] || fallbackName(0),
-            args: asArgsObject(obj),
-          });
-        });
-      } else {
-        entries.forEach((entry, idx) => {
-          let args = perEntryObjects[idx][0];
-          if (args === undefined) {
-            args = parseToolArguments(entry.arguments);
-          }
-          finalizedCalls.push({
-            id: entry.id || generateCallId(),
-            name: entry.name || fallbackName(idx),
-            args: asArgsObject(args),
-          });
-        });
+      // Never infer extra calls or invent a tool name from ambiguous arguments.
+      if (assembler.values().some(entry => !entry.name)) {
+        outcome = "failed";
+        emit("error", { message: "모델이 이름 없는 도구 호출을 보냈습니다. 다시 시도해 주세요." });
+        break turnLoop;
       }
+      const finalizedCalls = assembler.values().map(entry => ({
+        id: entry.id || generateCallId(),
+        name: entry.name,
+        args: parseToolArguments(entry.arguments),
+      }));
 
       // Format standard OpenAI tool_calls structure with guaranteed-valid JSON arguments
       const generatedToolCalls = finalizedCalls.map((fc) => ({
@@ -559,13 +479,14 @@ export class AgentHarness {
         if (emptyCompletions < maxEmptyCompletions) {
           emptyCompletions++;
           console.warn(`[Harness] Empty completion (round ${turn}, attempt ${emptyCompletions}/${maxEmptyCompletions}) — retrying`);
-          db.appendEvent(sessionId, "empty_response_retry", { attempt: emptyCompletions });
+          emit("empty_response_retry", { attempt: emptyCompletions });
           turn--;
           continue;
         }
         emptyCompletions = 0;
-        db.appendEvent(sessionId, "error", { message: "모델이 빈 응답을 반복했습니다. 메시지를 다시 보내거나 재생성해 주세요." });
-        db.appendEvent(sessionId, "turn_completed", { turn });
+        outcome = "failed";
+        emit("error", { message: "모델이 빈 응답을 반복했습니다. 메시지를 다시 보내거나 재생성해 주세요." });
+        emit("turn_completed", { turn });
         break;
       }
       emptyCompletions = 0;
@@ -581,7 +502,7 @@ export class AgentHarness {
         tool_calls: generatedToolCalls.length > 0 ? generatedToolCalls : undefined,
       });
 
-      db.appendEvent(sessionId, "assistant_message", {
+      emit("assistant_message", {
         id: assistantMsgId,
         content: sanitizedContent || "",
         thought: sanitizedThought,
@@ -590,40 +511,41 @@ export class AgentHarness {
 
       // If no tool calls were requested, the model has delivered its final response and concluded the task
       if (generatedToolCalls.length === 0) {
-        db.appendEvent(sessionId, "turn_completed", { turn });
+        emit("turn_completed", { turn });
         break;
       }
 
-      // Execute tool calls autonomously and in parallel, while maintaining strict order
-      const executionResults = await Promise.all(
-        generatedToolCalls.map(async (tc) => {
-          if (signal?.aborted) return { tc, observation: "Execution aborted by user." };
+      const executionResults = await scheduleTools(generatedToolCalls, async (tc) => {
+          if (signal?.aborted) return { tc, observation: "Execution aborted by user.", status: { ok: false, interrupted: true } as ToolStatus, outputId: undefined, parsedArgs: undefined };
 
           let parsedArgs = parsedArgsById.get(tc.id);
           if (!parsedArgs) {
             parsedArgs = parseToolArguments(tc.function.arguments);
           }
 
-          db.appendEvent(sessionId, "tool_executing", {
+          emit("tool_executing", {
             id: tc.id,
             name: tc.function.name,
             args: parsedArgs,
           });
 
           let observation = "";
+          let status: ToolStatus = { ok: false };
+          let outputId: number | undefined;
           try {
-            const result = await tools.execute(tc.function.name, parsedArgs, toolCtx, signal);
-            observation = typeof result === "string" ? result : serializeObservation(result);
+            const result = await tools.executeResult(tc.function.name, parsedArgs, toolCtx, signal);
+            observation = typeof result.observation === "string" ? result.observation : serializeObservation(result.observation);
+            status = { ok: result.ok, exitCode: result.exitCode, timedOut: result.timedOut, interrupted: result.interrupted };
+            outputId = result.outputId;
           } catch (toolErr: any) {
             observation = `Tool Execution Error: ${toolErr.message || String(toolErr)}`;
           }
 
           // Codex 0.151.0: Intercept repetitive broken tool retry cycles (Doom Loops)
-          observation = circuitBreaker.intercept(tc.function.name, parsedArgs, observation);
+          observation = circuitBreaker.intercept(tc.function.name, parsedArgs, observation, status);
 
-          return { tc, observation, parsedArgs };
-        })
-      );
+          return { tc, observation, parsedArgs, status, outputId };
+        });
 
       let fatalDoomLoopDetected = false;
       let failingToolName = "";
@@ -639,12 +561,16 @@ export class AgentHarness {
           tool_call_id: res.tc.id,
           name: res.tc.function.name,
           content: res.observation,
+          tool_status: res.status,
+          output_id: res.outputId,
         });
 
-        db.appendEvent(sessionId, "tool_observed", {
+        emit("tool_observed", {
           tool_call_id: res.tc.id,
           name: res.tc.function.name,
           observation: res.observation,
+          tool_status: res.status,
+          output_id: res.outputId,
         });
 
         if (circuitBreaker.shouldAbort(res.tc.function.name, res.parsedArgs)) {
@@ -655,23 +581,25 @@ export class AgentHarness {
 
       if (fatalDoomLoopDetected) {
         console.warn(`[Harness] Aborting loop due to persistent broken tool cycle: ${failingToolName}`);
-        db.appendEvent(sessionId, "error", { message: `동일한 도구(${failingToolName})의 지속적인 실패로 인해 작업을 안전하게 중단했습니다.` });
-        db.appendEvent(sessionId, "turn_completed", { turn });
+        outcome = "failed";
+        emit("error", { message: `동일한 도구(${failingToolName})의 지속적인 실패로 인해 작업을 안전하게 중단했습니다.` });
+        emit("turn_completed", { turn });
         break;
       }
 
       if (signal?.aborted) {
-        db.appendEvent(sessionId, "task_interrupted", { message: "Task stopped by user" });
+        emit("task_interrupted", { message: "Task stopped by user" });
         break;
       }
     }
 
-    if (!signal?.aborted) {
+    if (!runId) {
       db.updateSessionStatus(sessionId, "idle");
     }
+    return signal?.aborted ? "interrupted" : outcome;
   }
 
-  private async prepareMessages(session: { mode: "chat" | "agent" }, sessionRootDir: string, records: any[]): Promise<any[]> {
+  private async prepareMessages(session: { mode: "chat" | "agent" }, sessionRootDir: string, records: any[], contextWindow = CONFIG.CONTEXT_WINDOW_TOKENS): Promise<any[]> {
     // Attachment markers are appended here — prompt-only decoration. The
     // transcript stays clean; every replay still tells the model where its
     // files live.
@@ -696,9 +624,12 @@ export class AgentHarness {
     );
 
     const systemPrompt = buildSystemPrompt({ mode: session.mode, rootDir: sessionRootDir });
+    const overhead = estimateTokens(systemPrompt.content) + estimateTokens(JSON.stringify(tools.getSchemas(session.mode))) + 1024;
+    const available = Math.min(CONFIG.HISTORY_BUDGET_TOKENS, contextWindow - CONFIG.MAX_OUTPUT_TOKENS - overhead);
+    if (available < 256) throw new Error("모델 문맥 한도가 시스템 지침과 출력 예약량보다 작습니다. 문맥 한도 또는 출력 토큰 설정을 확인해 주세요.");
 
     const { messages } = buildHistory(enriched, {
-      budgetTokens: CONFIG.HISTORY_BUDGET_TOKENS,
+      budgetTokens: available,
       recentFullTools: CONFIG.HISTORY_RECENT_FULL_TOOLS,
       retainThought: CONFIG.THOUGHT_RETENTION,
       workspaceDir: sessionRootDir,

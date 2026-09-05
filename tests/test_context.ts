@@ -110,12 +110,13 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
   check("normalize: function shape", tc?.function?.name === "bash" && typeof tc.function.arguments === "string");
 }
 
-// 8. Budget keeps the newest unit even if it alone exceeds the budget.
+// 8. Oversized tool output is compacted; the user and total budget survive.
 {
   const huge = obs("h", "z".repeat(300_000));
   const recs = [user("old"), call("o"), obs("o", "older"), user("new"), call("h"), huge];
-  const { messages } = buildHistory(recs, { budgetTokens: 2_500 });
-  check("oversize-last-unit: still present", messages.some((m) => m.content?.startsWith("zzz")));
+  const { messages, stats } = buildHistory(recs, { budgetTokens: 2_500 });
+  check("oversize-last-unit: current user present", messages.some((m) => m.role === "user" && m.content === "new"));
+  check("oversize-last-unit: fits budget", stats.tokensKept <= 2_500);
 }
 
 // 9. Caller's records are never mutated by aging.
@@ -176,14 +177,13 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
   }
   const { messages } = buildHistory(recs, { budgetTokens: 1_800 });
   const text = messages.map((m) => m.content ?? "").join("\n");
-  // Sizes: each task ≈ 780 tok → budget 1800 keeps old tasks 4 and 3 whole;
-  // tasks 1-2 vanish together as a contiguous block.
+  // The entire payload, including the current task, shares the budget.
   check("flow: newest old tasks kept", text.includes("task 5 answer") && text.includes("task 4 answer"));
   check("flow: oldest dropped entirely", !text.includes("task 1") && !text.includes("task 2"));
   for (const t of [3, 4, 5]) {
     const q = text.includes(`task ${t} question`);
     const a = text.includes(`task ${t} answer`);
-    check(`flow: task ${t} complete (q&a together)`, q && a);
+    check(`flow: task ${t} complete or omitted (q&a together)`, q === a);
   }
   // No orphan answers: every assistant text is preceded (somewhere earlier in
   // the payload) by its own user turn.
@@ -292,8 +292,9 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
 
 // 11. A session whose ONLY unit is one oversized user message keeps it.
 {
-  const { messages } = buildHistory([user("y".repeat(200_000))], { budgetTokens: 2_500 });
-  check("oversized lone user kept", messages.length === 1 && messages[0].content?.length === 200_000);
+  let rejected = false;
+  try { buildHistory([user("y".repeat(200_000))], { budgetTokens: 2_500 }); } catch { rejected = true; }
+  check("oversized lone user rejected explicitly", rejected);
 }
 
 // 13. THOUGHT RETENTION: the CURRENT task's reasoning replays as <think>
@@ -356,6 +357,5 @@ const obs = (id: string, body: string, name = "bash"): HistoryRecord => ({
 
 console.log(failures === 0 ? "\n>>> ALL PASSED" : `\n>>> ${failures} FAILURES`);
 process.exit(failures ? 1 : 0);
-
 
 

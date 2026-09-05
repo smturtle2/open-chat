@@ -11,7 +11,11 @@ const localDb = path.join(path.dirname(fileURLToPath(import.meta.url)), "../open
 const defaultDb = fs.existsSync(localDb) ? localDb : path.join(DATA_ROOT, "openchat.db");
 
 export const CONFIG = {
+  HOST: process.env.OPENCHAT_HOST || undefined,
   PORT: parseInt(process.env.PORT || "3000", 10),
+  AUTH_TOKEN: process.env.OPENCHAT_AUTH_TOKEN || "",
+  AUTH_TOKEN_PATH: path.join(DATA_ROOT, "auth-token"),
+  ALLOWED_ORIGINS: (process.env.OPENCHAT_ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean),
   LLM_BASE_URL: process.env.LLM_BASE_URL || "https://opencode.ai/zen/go/v1",
   LLM_MODEL: process.env.LLM_MODEL || "muse-spark-1.2-contributor",
   // Secret lives only in .env (dotenv). Never commit a fallback key here.
@@ -19,6 +23,8 @@ export const CONFIG = {
   // Data root: everything mutable lives under ~/.openchat (workspace,
   // skills). Individual paths stay env-overridable.
   WORKSPACES_ROOT: path.resolve(process.env.OPENCHAT_WORKSPACE_ROOT || path.join(DATA_ROOT, "workspace")),
+  WORKSPACE_TRASH_ROOT: path.resolve(process.env.OPENCHAT_WORKSPACE_TRASH_ROOT || path.join(DATA_ROOT, "workspace-trash")),
+  WORKSPACE_TRASH_DAYS: parseInt(process.env.OPENCHAT_WORKSPACE_TRASH_DAYS || "7", 10),
   SKILLS_DIR: path.resolve(process.env.OPENCHAT_SKILLS_DIR || path.join(DATA_ROOT, "skills")),
   SANDBOX_IMAGE: process.env.OPENCHAT_SANDBOX_IMAGE || "openchat-sandbox:v2",
   SANDBOX_MEM_LIMIT: process.env.OPENCHAT_SANDBOX_MEM || "1g",
@@ -29,9 +35,10 @@ export const CONFIG = {
   TOOL_OUTPUT_KEEP_PER_SESSION: parseInt(process.env.OPENCHAT_TOOL_KEEP_N || "200", 10),
   TOOL_OUTPUT_MAX_AGE_DAYS: parseInt(process.env.OPENCHAT_TOOL_MAX_AGE_DAYS || "7", 10),
   // History budget in estimated TOKENS (script-aware: CJK ~1.5 ch/tok,
-  // ASCII ~4 ch/tok). 145K leaves headroom under a ~150K total context for
-  // the system prompt, tool schemas, and the model's response.
+  // ASCII ~4 ch/tok). The harness also caps this at the model context window
+  // minus system instructions, schemas, output reservation and a margin.
   HISTORY_BUDGET_TOKENS: parseInt(process.env.OPENCHAT_HISTORY_BUDGET_TOKENS || "145000", 10),
+  CONTEXT_WINDOW_TOKENS: parseInt(process.env.OPENCHAT_CONTEXT_WINDOW_TOKENS || "128000", 10),
   HISTORY_RECENT_FULL_TOOLS: parseInt(process.env.OPENCHAT_RECENT_FULL_TOOLS || "8", 10),
   // Replay the current task's reasoning (<think>) in history. Set
   // OPENCHAT_THOUGHT_RETENTION=off to fall back to dropping all thoughts.

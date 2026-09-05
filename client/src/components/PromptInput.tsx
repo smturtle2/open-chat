@@ -1,3 +1,4 @@
+import { apiFetch } from "../api";
 import React, { useState, useRef, useEffect } from "react";
 import { ArrowUp, Square, ChevronUp, Check, Paperclip, X } from "lucide-react";
 import { useChatStore, type ModelGroup } from "../store/useChatStore";
@@ -33,7 +34,7 @@ export const PromptInput: React.FC = () => {
   // Skills can appear at any time (the model installs them mid-session), so
   // re-fetch whenever the user STARTS a slash query instead of only on mount.
   const refreshSkills = React.useCallback(() => {
-    fetch("/api/skills")
+    apiFetch("/api/skills")
       .then((r) => r.json())
       .then((d) => setSkills(Array.isArray(d) ? d : []))
       .catch(() => {});

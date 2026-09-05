@@ -1,8 +1,11 @@
-import React, { useState } from "react";
-import { X, Copy, Download, Code, Eye, ExternalLink, Check, Sparkles } from "lucide-react";
+import React, { useState, lazy, Suspense } from "react";
+import { X, Copy, Download, Code, Eye, Check, Sparkles } from "lucide-react";
 import DOMPurify from "dompurify";
 import { useChatStore } from "../store/useChatStore";
 import { MarkdownView } from "./MarkdownView";
+
+const ReactPreview = lazy(() => import('./ReactPreview'));
+const MermaidPreview = lazy(() => import('./MermaidPreview'));
 
 export const ArtifactViewer: React.FC = () => {
   const { activeArtifact, closeArtifact } = useChatStore();
@@ -37,17 +40,6 @@ export const ArtifactViewer: React.FC = () => {
     a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
-  };
-
-  const handleOpenNewTab = () => {
-    if (activeArtifact.type === "html" || activeArtifact.type === "svg") {
-      const blob = new Blob([activeArtifact.content], {
-        type: activeArtifact.type === "html" ? "text/html" : "image/svg+xml",
-      });
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-    }
   };
 
   const isPreviewable = ["html", "svg", "markdown", "mermaid", "react"].includes(activeArtifact.type);
@@ -97,16 +89,6 @@ export const ArtifactViewer: React.FC = () => {
             </div>
           )}
 
-          {(activeArtifact.type === "html" || activeArtifact.type === "svg") && (
-            <button
-              onClick={handleOpenNewTab}
-              className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
-              title="새 탭에서 열기"
-            >
-              <ExternalLink className="w-4 h-4" />
-            </button>
-          )}
-
           <button
             onClick={handleCopy}
             className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
@@ -148,11 +130,9 @@ export const ArtifactViewer: React.FC = () => {
               }}
             />
           ) : activeArtifact.type === "mermaid" ? (
-            <div className="p-6 max-w-3xl mx-auto">
-              <div className="p-4 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-xs font-mono text-zinc-800 dark:text-zinc-200">
-                <MarkdownView content={`\`\`\`mermaid\n${activeArtifact.content}\n\`\`\``} />
-              </div>
-            </div>
+            <Suspense fallback={<div className="p-5">다이어그램을 그리는 중…</div>}><MermaidPreview content={activeArtifact.content} /></Suspense>
+          ) : activeArtifact.type === "react" ? (
+            <Suspense fallback={<div className="p-5">미리보기를 준비하는 중…</div>}><ReactPreview content={activeArtifact.content} /></Suspense>
           ) : (
             <iframe
               srcDoc={activeArtifact.content}

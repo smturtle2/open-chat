@@ -1,3 +1,4 @@
+import { apiFetch } from "../api";
 import { create } from "zustand";
 import { applyTheme, readThemePreference, writeThemePreference, type ThemePreference } from "../theme";
 
@@ -34,6 +35,7 @@ export interface Session {
   mode: SessionMode;
   workdir: string | null;
   status: "idle" | "running";
+  workspace_state?: "active" | "archived" | "missing";
   created_at: string;
   updated_at: string;
 }
@@ -68,6 +70,7 @@ export interface Artifact {
 interface ChatState {
   sessions: Session[];
   currentSessionId: string | null;
+  currentRunId: string | null;
   messages: Message[];
   isGenerating: boolean;
   currentThought: string;
@@ -110,6 +113,7 @@ interface ChatState {
 export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   currentSessionId: null,
+  currentRunId: null,
   messages: [],
   isGenerating: false,
   currentThought: "",
@@ -142,7 +146,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       try {
         const form = new FormData();
         form.append("file", file);
-        const res = await fetch(`/api/sessions/${targetSessionId}/attachments`, { method: "POST", body: form });
+        const res = await apiFetch(`/api/sessions/${targetSessionId}/attachments`, { method: "POST", body: form });
         if (res.ok) {
           added.push(await res.json());
         } else {
@@ -180,7 +184,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   fetchModels: async () => {
     try {
-      const res = await fetch("/api/models");
+      const res = await apiFetch("/api/models");
       if (!res.ok) return;
       const data = await res.json();
       const groups: ModelGroup[] = (data.groups || []).map((g: any) => ({
@@ -220,7 +224,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   fetchSessions: async () => {
     try {
-      const res = await fetch("/api/sessions");
+      const res = await apiFetch("/api/sessions");
       if (!res.ok) return;
       const data: Session[] = await res.json();
       set({ sessions: data });
@@ -237,7 +241,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   createSession: async (mode: SessionMode = "chat", workdir?: string) => {
     try {
       const { selectedModel, selectedProvider } = get();
-      const res = await fetch("/api/sessions", {
+      const res = await apiFetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -257,6 +261,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set((state) => ({
         sessions: [session, ...state.sessions],
         currentSessionId: session.id,
+        currentRunId: null,
         messages: [],
         currentThought: "",
         currentContent: "",
@@ -282,6 +287,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     set({
       currentSessionId: id,
+      currentRunId: null,
       currentThought: "",
       currentContent: "",
       activeToolCalls: [],
@@ -290,7 +296,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     try {
-      const res = await fetch(`/api/sessions/${id}`);
+      const res = await apiFetch(`/api/sessions/${id}`);
       if (!res.ok) return;
       const data = await res.json();
 
@@ -331,6 +337,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({
         messages: rawMessages,
         isGenerating: isRunning,
+        currentRunId: data.run?.id || null,
+        currentThought: data.run?.thought || "",
+        currentContent: data.run?.content || "",
+        activeToolCalls: data.run?.tools || [],
         selectedModel: sessionModel,
         selectedProvider: sessionProvider,
       });
@@ -343,7 +353,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   deleteSession: async (id: string) => {
     try {
-      await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+      await apiFetch(`/api/sessions/${id}`, { method: "DELETE" });
       const { sessions, currentSessionId } = get();
       const filtered = sessions.filter((s) => s.id !== id);
       set({ sessions: filtered });
@@ -360,7 +370,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   updateSessionTitle: async (id: string, title: string) => {
     try {
-      await fetch(`/api/sessions/${id}`, {
+      await apiFetch(`/api/sessions/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
@@ -385,7 +395,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Persist to current session
     if (currentSessionId) {
       try {
-        await fetch(`/api/sessions/${currentSessionId}`, {
+        await apiFetch(`/api/sessions/${currentSessionId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model, provider: nextProvider || null }),
@@ -427,17 +437,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     try {
-      const res = await fetch(`/api/sessions/${currentSessionId}/messages`, {
+      const res = await apiFetch(`/api/sessions/${currentSessionId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: userMsgId, content: promptText, attachmentIds }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "Message failed" }));
-        set({ isGenerating: false, lastError: err.error || "Failed to send message" });
+        if (get().currentSessionId === currentSessionId) set({ isGenerating: false, lastError: err.error || "Failed to send message" });
       }
     } catch {
-      set({ isGenerating: false, lastError: "Network error occurred" });
+      if (get().currentSessionId === currentSessionId) set({ isGenerating: false, lastError: "Network error occurred" });
     }
   },
 
@@ -460,17 +470,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     try {
-      const res = await fetch(`/api/sessions/${currentSessionId}/messages/${messageId}/edit`, {
+      const res = await apiFetch(`/api/sessions/${currentSessionId}/messages/${messageId}/edit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: newContent }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "Edit failed" }));
-        set({ isGenerating: false, lastError: err.error || "Failed to edit message" });
+        if (get().currentSessionId === currentSessionId) set({ isGenerating: false, lastError: err.error || "Failed to edit message" });
       }
     } catch {
-      set({ isGenerating: false, lastError: "Network error occurred" });
+      if (get().currentSessionId === currentSessionId) set({ isGenerating: false, lastError: "Network error occurred" });
     }
   },
 
@@ -492,15 +502,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     try {
-      const res = await fetch(`/api/sessions/${currentSessionId}/messages/${messageId}/regenerate`, {
+      const res = await apiFetch(`/api/sessions/${currentSessionId}/messages/${messageId}/regenerate`, {
         method: "POST",
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "Regeneration failed" }));
-        set({ isGenerating: false, lastError: err.error || "Failed to regenerate message" });
+        if (get().currentSessionId === currentSessionId) set({ isGenerating: false, lastError: err.error || "Failed to regenerate message" });
       }
     } catch {
-      set({ isGenerating: false, lastError: "Network error occurred" });
+      if (get().currentSessionId === currentSessionId) set({ isGenerating: false, lastError: "Network error occurred" });
     }
   },
 
@@ -509,8 +519,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!currentSessionId) return;
 
     try {
-      await fetch(`/api/sessions/${currentSessionId}/stop`, { method: "POST" });
-      set({ isGenerating: false });
+      await apiFetch(`/api/sessions/${currentSessionId}/stop`, { method: "POST" });
+      if (get().currentSessionId === currentSessionId) set({ isGenerating: false });
     } catch {}
   },
 
@@ -528,7 +538,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       es.addEventListener(type, (e: any) => {
         if (get().currentSessionId !== sessionId) return;
         try {
-          fn(JSON.parse(e.data));
+          const payload = JSON.parse(e.data);
+          if (payload.run_id && type !== "run_queued" && get().currentRunId && payload.run_id !== get().currentRunId) return;
+          fn(payload);
         } catch {}
       });
 
@@ -537,6 +549,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       currentThought: "",
       currentContent: "",
       activeToolCalls: [],
+    });
+
+    on("run_queued", ({ run_id }) => set({ ...resetStreamState(), currentRunId: run_id, isGenerating: true }));
+    on("run_started", ({ run_id }) => set({ currentRunId: run_id, isGenerating: true }));
+    on("run_finished", () => {
+      set(resetStreamState());
+      get().fetchSessions();
     });
 
     on("thought_delta", ({ delta }) =>
@@ -581,7 +600,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         const updatedActive = state.activeToolCalls.map((t) =>
           t.id === payload.tool_call_id
-            ? { ...t, status: "completed" as const, observation }
+            ? { ...t, status: (payload.tool_status?.ok === false ? "error" : "completed") as "error" | "completed", observation }
             : t
         );
 
@@ -666,14 +685,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     });
 
-    es.addEventListener("turn_completed", () => {
-      if (get().currentSessionId !== sessionId) return;
+    on("turn_completed", () => {
       set(resetStreamState());
       get().fetchSessions();
     });
 
-    es.addEventListener("task_interrupted", () => {
-      if (get().currentSessionId !== sessionId) return;
+    on("task_interrupted", () => {
       set(resetStreamState());
       get().fetchSessions();
     });
@@ -689,11 +706,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Harness failure events carry a data payload; native EventSource
     // connection errors do not (they auto-reconnect silently).
     es.addEventListener("error", (e: any) => {
-      if (!e?.data) return;
+      if (!e?.data) {
+        if (get().currentSessionId === sessionId) fetch('/api/auth').then(r => r.json()).then(data => {
+          if (!data.authenticated) window.dispatchEvent(new Event('openchat:auth-required'));
+        }).catch(() => {});
+        return;
+      }
       if (get().currentSessionId !== sessionId) return;
       let message = "The task failed unexpectedly.";
       try {
-        message = JSON.parse(e.data).message || message;
+        const payload = JSON.parse(e.data);
+        if (payload.run_id && payload.run_id !== get().currentRunId) return;
+        message = payload.message || message;
       } catch {}
       set({
         ...resetStreamState(),

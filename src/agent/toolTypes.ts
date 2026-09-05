@@ -23,6 +23,33 @@ export interface ToolObservation {
   path?: string;
 }
 
+export interface ToolStatus {
+  ok: boolean;
+  exitCode?: number | null;
+  timedOut?: boolean;
+  interrupted?: boolean;
+}
+
+export interface ToolResult extends ToolStatus {
+  observation: string | ToolObservation;
+  outputId?: number;
+}
+
+/** Compatibility for old records and file helpers; processes use exitCode. */
+export function statusFromText(text: string): ToolStatus {
+  const code = text.match(/(?:Process exited with status code|exit code|exit status)\s+(-?\d+)/i);
+  const timedOut = /\btimed out\b/i.test(text);
+  const interrupted = /\b(?:aborted by user|interrupted after)\b/i.test(text);
+  const exitCode = code ? Number(code[1]) : undefined;
+  return {
+    ok: !timedOut && !interrupted && (exitCode === undefined || exitCode === 0)
+      && !/(?:^|\n)(?:Error\b|Tool Execution Error)/i.test(text),
+    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(timedOut ? { timedOut } : {}),
+    ...(interrupted ? { interrupted } : {}),
+  };
+}
+
 // Envelope persisted in the tool record's content column. Image BYTES are not
 // stored — only a path; buildHistory re-reads the file at prompt-build time
 // and degrades to plain text if it has vanished.

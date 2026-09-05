@@ -15,7 +15,7 @@ import {
 } from "./exec.js";
 import path from "node:path";
 import { fsOp, viewImage, searchFilesOp, listFilesOp, type FsRequest } from "./filesys.js";
-import type { ToolDefinition, ToolObservation } from "./toolTypes.js";
+import { statusFromText, type ToolDefinition, type ToolObservation, type ToolResult, type ToolStatus } from "./toolTypes.js";
 
 export {
   serializeObservation,
@@ -281,8 +281,17 @@ export class ToolRegistry {
   }
 
   async execute(name: string, args: Record<string, any>, ctx: ToolContext, signal?: AbortSignal): Promise<string | ToolObservation> {
+    return (await this.executeResult(name, args, ctx, signal)).observation;
+  }
+
+  async executeResult(name: string, args: Record<string, any>, ctx: ToolContext, signal?: AbortSignal): Promise<ToolResult> {
     try {
-      let rawResult: string | ToolObservation = "";
+      if (signal?.aborted) return { observation: "Execution aborted by user.", ok: false, interrupted: true };
+      const schema = this.getSchemas(ctx.mode).find((s) => s.function.name === name)?.function.parameters;
+      if (!schema) return { observation: `Error: Unknown tool "${name}"`, ok: false };
+      const invalid = validateArguments(schema, args);
+      if (invalid) return { observation: `Error: Invalid arguments for ${name}: ${invalid}`, ok: false };
+      let rawResult: string | ToolObservation | ToolResult = "";
       switch (name) {
         case "bash":
           rawResult = await this.bash(args.command || "", ctx, signal);
@@ -344,43 +353,43 @@ export class ToolRegistry {
           break;
 
         default:
-          return `Error: Unknown tool "${name}"`;
+          return { observation: `Error: Unknown tool "${name}"`, ok: false };
       }
-      return rawResult;
+      if (typeof rawResult === "object" && "observation" in rawResult) return rawResult;
+      if (typeof rawResult === "string" && !["read_output", "load_skill"].includes(name)) return this.settle(name, ctx.sessionId, rawResult);
+      return { observation: rawResult, ...(typeof rawResult === "string" ? statusFromText(rawResult) : { ok: true }) };
     } catch (err: any) {
-      return `Error executing tool "${name}": ${err.message || String(err)}`;
+      return { observation: `Error executing tool "${name}": ${err.message || String(err)}`, ok: false };
     }
   }
 
   // ------------------------------------------------------------- code execution
 
-  private async bash(command: string, ctx: ToolContext, signal?: AbortSignal): Promise<string> {
-    if (!command.trim()) return "Error: No command provided.";
-    const hasDocker = await dockerAvailable();
+  private async bash(command: string, ctx: ToolContext, signal?: AbortSignal): Promise<ToolResult> {
+    if (!command.trim()) return { observation: "Error: No command provided.", ok: false };
     const result =
-      ctx.mode === "agent" || !hasDocker
+      ctx.mode === "agent"
         ? await runHostProc(["bash", "-c", command], ctx.cwd, { timeoutMs: BASH_TIMEOUT_MS, label: "Execution", signal })
         : await runDockerExec(await this.requireContainer(ctx), ["bash", "-c", command], { timeoutMs: BASH_TIMEOUT_MS, label: "Execution", signal });
-    return this.settle("bash", ctx.sessionId, formatExec(result));
+    return this.settle("bash", ctx.sessionId, formatExec(result), processStatus(result));
   }
 
-  private async python(code: string, ctx: ToolContext, signal?: AbortSignal): Promise<string> {
-    if (!code.trim()) return "Error: No code provided.";
-    const hasDocker = await dockerAvailable();
+  private async python(code: string, ctx: ToolContext, signal?: AbortSignal): Promise<ToolResult> {
+    if (!code.trim()) return { observation: "Error: No code provided.", ok: false };
     const result =
-      ctx.mode === "agent" || !hasDocker
+      ctx.mode === "agent"
         ? await runHostProc(["python3", "-c", code], ctx.cwd, { timeoutMs: PYTHON_TIMEOUT_MS, label: "Python execution", signal })
         : await runDockerExec(await this.requireContainer(ctx), ["python3", "-c", code], { timeoutMs: PYTHON_TIMEOUT_MS, label: "Python execution", signal });
-    return this.settle("python", ctx.sessionId, formatExec(result));
+    return this.settle("python", ctx.sessionId, formatExec(result), processStatus(result));
   }
 
   // ------------------------------------------------------------------ web tools
 
-  private async webSearch(query: string, ctx: ToolContext, signal?: AbortSignal): Promise<string> {
-    if (!query || !query.trim()) return "Error: Query is required";
+  private async webSearch(query: string, ctx: ToolContext, signal?: AbortSignal): Promise<ToolResult> {
+    if (!query || !query.trim()) return { observation: "Error: Query is required", ok: false };
     const cleanQuery = query.trim();
     const hasDocker = await dockerAvailable();
-    const r = hasDocker
+    const r = ctx.mode === "chat" || hasDocker
       ? await runDockerExec(await this.requireContainer(ctx), ["python3", "/opt/agent/web_search.py", cleanQuery, "10"], { timeoutMs: 60000, label: "Web search", signal })
       : await runHostProc(["python3", path.join(AGENT_SCRIPTS_DIR, "web_search.py"), cleanQuery, "10"], ctx.cwd, { timeoutMs: 60000, label: "Web search", signal });
 
@@ -389,17 +398,17 @@ export class ToolRegistry {
 
     if (!items.length) {
       const detail = r.err ? `\n${r.err.slice(0, 300)}` : "";
-      return `No results found for "${cleanQuery}".${detail}`;
+      return this.settle("web_search", ctx.sessionId, `No results found for "${cleanQuery}".${detail}`, processStatus(r));
     }
 
     return this.settle(
       "web_search",
       ctx.sessionId,
-      items.map((it, idx) => `[Result ${idx + 1}]:\nTitle: ${it.title || "(no title)"}\nURL: ${it.url}\nSnippet: ${it.snippet || ""}`).join("\n\n")
+      items.map((it, idx) => `[Result ${idx + 1}]:\nTitle: ${it.title || "(no title)"}\nURL: ${it.url}\nSnippet: ${it.snippet || ""}`).join("\n\n"), processStatus(r)
     );
   }
 
-  private async webFetch(args: Record<string, any>, ctx: ToolContext, signal?: AbortSignal): Promise<string> {
+  private async webFetch(args: Record<string, any>, ctx: ToolContext, signal?: AbortSignal): Promise<ToolResult> {
     const jsonArgs = JSON.stringify({
       url: args.url || "",
       engine: args.engine || args.mode || "http",
@@ -411,13 +420,13 @@ export class ToolRegistry {
       adaptive: Boolean(args.adaptive),
     });
     const hasDocker = await dockerAvailable();
-    const r = hasDocker
+    const r = ctx.mode === "chat" || hasDocker
       ? await runDockerExec(await this.requireContainer(ctx), ["python3", "/opt/agent/scrapling_fetch.py", jsonArgs, "/workspace"], { timeoutMs: 45000, label: "Scrapling fetch", signal })
       : await runHostProc(["python3", path.join(AGENT_SCRIPTS_DIR, "scrapling_fetch.py"), jsonArgs, ctx.cwd], ctx.cwd, { timeoutMs: 45000, label: "Scrapling fetch", signal });
-    return this.settle("web_fetch", ctx.sessionId, r.out.trim() || r.err.trim() || "[Scrapling fetch finished with no output]");
+    return this.settle("web_fetch", ctx.sessionId, formatExec(r), processStatus(r));
   }
 
-  private async webCrawl(args: Record<string, any>, ctx: ToolContext, signal?: AbortSignal): Promise<string> {
+  private async webCrawl(args: Record<string, any>, ctx: ToolContext, signal?: AbortSignal): Promise<ToolResult> {
     const jsonArgs = JSON.stringify({
       start_urls: args.start_urls || (args.url ? [args.url] : []),
       crawl_type: args.crawl_type || "follow_links",
@@ -428,10 +437,10 @@ export class ToolRegistry {
       output_file: args.output_file || "crawl_results.json",
     });
     const hasDocker = await dockerAvailable();
-    const r = hasDocker
+    const r = ctx.mode === "chat" || hasDocker
       ? await runDockerExec(await this.requireContainer(ctx), ["python3", "/opt/agent/scrapling_crawl.py", jsonArgs, "/workspace"], { timeoutMs: 60000, label: "Scrapling crawl", signal })
       : await runHostProc(["python3", path.join(AGENT_SCRIPTS_DIR, "scrapling_crawl.py"), jsonArgs, ctx.cwd], ctx.cwd, { timeoutMs: 60000, label: "Scrapling crawl", signal });
-    return this.settle("web_crawl", ctx.sessionId, r.out.trim() || r.err.trim() || `[Scrapling crawl finished with code ${r.code}]`);
+    return this.settle("web_crawl", ctx.sessionId, formatExec(r), processStatus(r));
   }
 
   private async requireContainer(ctx: ToolContext): Promise<string> {
@@ -465,12 +474,12 @@ export class ToolRegistry {
   // Tail bias for bash/python (errors live at the end), head bias elsewhere.
   private static readonly HEAD_BIAS = new Set(["read_file", "web_fetch", "web_crawl", "web_search"]);
 
-  private settle(tool: string, sessionId: string, fullText: string): string {
+  private settle(tool: string, sessionId: string, fullText: string, status: ToolStatus = statusFromText(fullText)): ToolResult {
     const id = db.archiveToolOutput(sessionId, tool, fullText, CONFIG.TOOL_ARCHIVE_MAX_CHARS);
     const bias: TruncateBias = ToolRegistry.HEAD_BIAS.has(tool) ? "head" : "tail";
     const surface = truncateDirectional(fullText, bias, id);
     db.recordToolUsage(sessionId, tool, fullText.length, surface.length);
-    return surface;
+    return { observation: surface, outputId: id, ...status };
   }
 
   private readArchivedOutput(sessionId: string, args: Record<string, any>): string {
@@ -482,6 +491,34 @@ export class ToolRegistry {
     const body = pageLines(rec.content, args.offset, args.limit);
     return `${header}\n${body}`;
   }
+}
+
+function processStatus(result: { code: number | null; timedOut?: boolean; interrupted?: boolean }): ToolStatus {
+  return { ok: result.code === 0 && !result.timedOut && !result.interrupted, exitCode: result.code,
+    timedOut: !!result.timedOut, interrupted: !!result.interrupted };
+}
+
+function validateArguments(schema: any, value: any, label = "arguments"): string | null {
+  if (schema.type === "object") {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return `${label} must be an object`;
+    for (const key of schema.required || []) if (value[key] === undefined) return `${key} is required`;
+    for (const [key, child] of Object.entries(schema.properties || {})) {
+      if (value[key] !== undefined) {
+        const invalid = validateArguments(child, value[key], key);
+        if (invalid) return invalid;
+      }
+    }
+  } else if (schema.type === "array") {
+    if (!Array.isArray(value)) return `${label} must be an array`;
+    for (const item of value) {
+      const invalid = validateArguments(schema.items || {}, item, label);
+      if (invalid) return invalid;
+    }
+  } else if (schema.type && (typeof value !== schema.type || (schema.type === "number" && !Number.isFinite(value)))) {
+    return `${label} must be ${schema.type}`;
+  }
+  if (schema.enum && !schema.enum.includes(value)) return `${label} has an unsupported value`;
+  return null;
 }
 
 /** File operations run against the context root via the shared filesys layer. */
@@ -496,4 +533,3 @@ async function files(ctx: ToolContext, req: any): Promise<string> {
 }
 
 export const tools = new ToolRegistry();
-

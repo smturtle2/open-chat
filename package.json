@@ -7,11 +7,12 @@
   ],
   "scripts": {
     "start": "node --import=tsx src/index.ts",
-    "build": "npm --prefix client install && npm --prefix client run build",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import=tsx tests/test_units.ts && node --import=tsx tests/test_context.ts && node --import=tsx tests/test_new_tools.ts && node --import=tsx tests/test_workspace_retention.ts && node --import=tsx tests/test_protocols.ts",
-    "test:unit": "node --import=tsx tests/test_units.ts && node --import=tsx tests/test_context.ts && node --import=tsx tests/test_new_tools.ts && node --import=tsx tests/test_workspace_retention.ts && node --import=tsx tests/test_protocols.ts",
-    "test:e2e": "node tests/test_step_sheet.js && node tests/test_working_indicator.js"
+    "build": "npm --workspace client run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p client/tsconfig.json",
+    "test": "node tests/run.mjs",
+    "test:unit": "node tests/run.mjs",
+    "test:e2e": "node tests/run.mjs test_ui.js",
+    "auth:token": "node --import=tsx src/token.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
@@ -22,6 +23,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.2",
+    "esbuild": "^0.28.2",
     "playwright": "^1.62.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"

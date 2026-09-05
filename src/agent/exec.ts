@@ -176,10 +176,12 @@ export async function cleanupContainer(sessionId: string): Promise<void> {
   await execFileAsync("docker", ["rm", "-f", containerName(sessionId)], { timeout: 30000 }).catch(() => undefined);
 }
 
-export async function cleanupAllContainers(): Promise<void> {
-  const ps = await dockerRun(["ps", "-aq", "--filter", "name=oc_sb_"], 20000);
+export async function cleanupAllContainers(sessionIds?: string[]): Promise<void> {
+  const ps = await dockerRun(["ps", "-a", "--format", "{{.Names}}", "--filter", "name=oc_sb_"], 20000);
   if (!ps.ok || !ps.out.trim()) return;
-  const ids = ps.out.trim().split("\n");
+  const owned = sessionIds && new Set(sessionIds.map(containerName));
+  const ids = ps.out.trim().split("\n").filter(name => !owned || owned.has(name));
+  if (!ids.length) return;
   await execFileAsync("docker", ["rm", "-f", ...ids], { timeout: 60000 }).catch(() => undefined);
   console.log(`[sandbox] Removed ${ids.length} stale sandbox container(s)`);
 }
@@ -207,8 +209,8 @@ function capAndCollect(cap: number) {
 /**
  * Run `docker exec` inside a container. Output is capped; timeout/abort kills
  * the command via container restart (the workspace volume survives; only the
- * sleep-infinity entrypoint re-runs). The kill is issued asynchronously — the
- * partial result resolves immediately instead of blocking on `docker restart`.
+ * sleep-infinity entrypoint re-runs). Wait for restart and process closure
+ * before resolving so the next session task cannot race cleanup.
  */
 export async function runDockerExec(container: string, argv: string[], opts: RunOptions): Promise<ExecResult> {
   const startedAt = Date.now();
@@ -222,13 +224,13 @@ export async function runDockerExec(container: string, argv: string[], opts: Run
     container,
     ...argv,
   ]);
-  return runChild(child, opts, () => void restartContainer(container), startedAt);
+  return runChild(child, opts, () => restartContainer(container), startedAt);
 }
 
 /**
  * Run a process directly on the host (agent mode). The command runs detached
  * in its own process group so timeout/abort can kill the whole tree without
- * touching the server process; the partial result settles immediately.
+ * touching the server process; partial output settles after process closure.
  */
 export async function runHostProc(argv: string[], cwd: string, opts: RunOptions): Promise<ExecResult> {
   const startedAt = Date.now();
@@ -247,13 +249,16 @@ export async function runHostProc(argv: string[], cwd: string, opts: RunOptions)
 function runChild(
   child: ReturnType<typeof spawn>,
   opts: RunOptions,
-  kill: () => void,
+  kill: () => void | Promise<void>,
   startedAt: number
 ): Promise<ExecResult> {
   const { timeoutMs, label, stdinData, signal } = opts;
   const collect = capAndCollect(CONFIG.SANDBOX_OUTPUT_CAP);
 
   let settled = false;
+  let terminating = false;
+  let closed!: () => void;
+  const childClosed = new Promise<void>((resolve) => { closed = resolve; });
   let release!: (r: ExecResult) => void;
   const done = new Promise<ExecResult>((res) => (release = res));
 
@@ -283,8 +288,17 @@ function runChild(
     }
   };
   const killAndSettle = (partial: ExecResult) => {
-    settle({ ...partial, elapsedMs: Date.now() - startedAt });
-    kill();
+    if (settled || terminating) return;
+    terminating = true;
+    clearTimeout(timer);
+    void (async () => {
+      try {
+        await kill();
+        await childClosed;
+      } finally {
+        settle({ ...partial, elapsedMs: Date.now() - startedAt });
+      }
+    })().catch(() => {});
   };
 
   const timer = setTimeout(() => {
@@ -296,25 +310,21 @@ function runChild(
     });
   }, timeoutMs);
 
-  if (signal) {
-    if (signal.aborted) {
-      clearTimeout(timer);
-      abortHandler();
-    } else {
-      signal.addEventListener("abort", abortHandler, { once: true });
-    }
-  }
-
   child.stdout?.on("data", (d) => collect.append("out", d));
   child.stderr?.on("data", (d) => collect.append("err", d));
   if (stdinData !== undefined) child.stdin?.end(stdinData);
 
   child.on("close", (code) => {
-    settle({ ...collect.result(), code });
+    closed();
+    if (!terminating) settle({ ...collect.result(), code, elapsedMs: Date.now() - startedAt });
   });
   child.on("error", (err) => {
-    settle({ out: "", err: err.message, code: -1, truncated: false });
+    closed();
+    if (!terminating) settle({ out: "", err: err.message, code: -1, truncated: false });
   });
+
+  if (signal?.aborted) abortHandler();
+  else signal?.addEventListener("abort", abortHandler, { once: true });
 
   return done;
 }

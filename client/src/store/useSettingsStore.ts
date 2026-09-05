@@ -1,3 +1,4 @@
+import { apiFetch } from "../api";
 import { create } from "zustand";
 import { useChatStore } from "./useChatStore";
 
@@ -55,7 +56,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   fetchSettings: async () => {
     try {
-      const res = await fetch("/api/settings");
+      const res = await apiFetch("/api/settings");
       if (res.ok) set({ settings: await res.json() });
     } catch {}
   },
@@ -63,7 +64,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   saveSettings: async (patch) => {
     set((state) => ({ settings: { ...state.settings, ...patch } }));
     try {
-      const res = await fetch("/api/settings", {
+      const res = await apiFetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -75,7 +76,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   fetchProviders: async () => {
     set({ loadingProviders: true });
     try {
-      const res = await fetch("/api/providers");
+      const res = await apiFetch("/api/providers");
       if (res.ok) set({ providers: await res.json() });
     } catch {
     } finally {
@@ -97,7 +98,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       ...(draft.api_key || !exists ? { api_key: draft.api_key } : {}),
     };
     try {
-      const res = await fetch(exists ? `/api/providers/${targetId}` : "/api/providers", {
+      const res = await apiFetch(exists ? `/api/providers/${targetId}` : "/api/providers", {
         method: exists ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -116,7 +117,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   deleteProvider: async (id) => {
     try {
-      await fetch(`/api/providers/${id}`, { method: "DELETE" });
+      await apiFetch(`/api/providers/${id}`, { method: "DELETE" });
       await get().fetchProviders();
       useChatStore.getState().fetchModels().catch(() => {});
     } catch {}
@@ -124,7 +125,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   testProvider: async (id) => {
     try {
-      const res = await fetch(`/api/providers/${id}/test`, { method: "POST" });
+      const res = await apiFetch(`/api/providers/${id}/test`, { method: "POST" });
       return await res.json();
     } catch (err: any) {
       return { ok: false, error: err?.message || "테스트 실패" };

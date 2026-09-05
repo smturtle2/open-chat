@@ -251,6 +251,15 @@ export function parseToolArguments(argumentsStr: string | undefined | null): Rec
   return { raw: argumentsStr };
 }
 
+// Execution requires exactly one complete object. Repair syntax, but never
+// execute a fragment carved out of concatenated or incomplete arguments.
+export function parseSingleToolArguments(raw: string): Record<string, any> {
+  if (!raw.trim()) return {};
+  const parsed = safeParse(stripCodeFences(raw));
+  return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed : { raw };
+}
+
 /**
  * Codex 0.151.0 Tool Output Single-Pass Normalizer:
  * Prevents double-escaped JSON strings (\"{\\\"res\\\": 1}\") when passing tool outputs.
