@@ -17,22 +17,17 @@ import { runHostProc, formatExec, cleanupAllContainers } from "../src/agent/exec
 import { tools } from "../src/agent/tools.js";
 import { parseSingleToolArguments } from "../src/agent/jsonUtils.js";
 
-const auth = { Authorization: `Bearer ${CONFIG.AUTH_TOKEN}` };
-const request = (url: string, init: RequestInit = {}) => app.request(url, { ...init, headers: { ...auth, ...init.headers } });
+const request = (url: string, init: RequestInit = {}) => app.request(url, init);
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async () => Response.json({ data: [{ id: "local-test", context_length: 32000 }] });
 try {
-  for (const route of ["/api/sessions", "/api/providers", "/api/models", "/api/sessions/ghost/files", "/api/sessions/ghost/events"]) {
-    assert.equal((await app.request(route)).status, 401, route);
+  for (const route of ["/api/sessions", "/api/providers", "/api/models"]) {
+    assert.equal((await app.request(route)).status, 200, route);
   }
-  assert.equal((await request("/api/providers", { headers: { ...auth, Origin: "https://untrusted.invalid" } })).status, 403);
-  const login = await app.request("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: CONFIG.AUTH_TOKEN }) });
-  assert.equal(login.status, 200);
-  const cookie = login.headers.get("set-cookie")!;
-  assert.match(cookie, /HttpOnly/); assert.match(cookie, /SameSite=Strict/);
-  assert.ok(!cookie.includes(CONFIG.AUTH_TOKEN));
-  assert.equal((await app.request("/api/sessions", { headers: { cookie: cookie.split(";")[0] } })).status, 200);
-  assert.equal((await app.request("/api/sessions", { headers: { cookie: cookie.split(";")[0] + "broken" } })).status, 401);
+  assert.equal((await request("/api/providers", { headers: { Origin: "https://untrusted.invalid" } })).status, 403);
+  assert.equal((await request("/api/auth")).status, 404);
+  assert.equal((await request("/api/auth/login", { method: "POST" })).status, 404);
+  assert.ok(!fs.existsSync(path.join(process.env.OPENCHAT_HOME!, "auth-token")));
   const provider = createProvider({ name: "secret-provider", base_url: "http://localhost:9999/v1", api_key: "must-never-leak" });
   const patched = await request(`/api/providers/${provider.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "renamed" }) });
   assert.equal(patched.status, 200);
@@ -46,7 +41,7 @@ try {
   assert.equal(isProviderUsable({ ...local, base_url: "https://127.evil.invalid" }), false);
   for (const route of ["files", "files/x.html", "events"]) assert.equal((await request(`/api/sessions/unknown/${route}`)).status, 404);
   assert.ok(!fs.existsSync(path.join(CONFIG.WORKSPACES_ROOT, "unknown")));
-  console.log("PASS authentication, origin checks, provider masking, local catalog and unknown-session confinement");
+  console.log("PASS direct API access, origin checks, provider masking, local catalog and unknown-session confinement");
 
   const session = db.createSession("regression", "regression");
   const root = chatWorkspaceDir(session.id);

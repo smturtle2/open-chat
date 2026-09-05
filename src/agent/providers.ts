@@ -1,4 +1,5 @@
 import { CONFIG } from "../config.js";
+import { upstreamHeaders } from "./upstreamHeaders.js";
 import { isIP } from "node:net";
 import { db, type ProviderModel, type ProviderRecord } from "../db/database.js";
 
@@ -290,7 +291,7 @@ export async function fetchUpstreamModels(baseUrl: string, apiKey: string): Prom
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
     const res = await fetch(`${baseUrl}/models`, {
-      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      headers: upstreamHeaders(baseUrl, apiKey),
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

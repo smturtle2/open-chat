@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { installAuth } from "./auth.js";
+import { installHttpPolicy } from "./httpPolicy.js";
 import { CONFIG } from "./config.js";
 import { db } from "./db/database.js";
 import { coordinator } from "./agent/coordinator.js";
@@ -31,7 +31,7 @@ import type { SessionRecord } from "./db/database.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const app = new Hono();
 
-installAuth(app);
+installHttpPolicy(app);
 
 // API: Sessions
 app.get("/api/sessions", (c) => {
@@ -299,7 +299,7 @@ app.get("/api/sessions/:id/files/:filename{.+}", (c) => {
   const base = path.basename(fullReal);
   const asciiFallback = base.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "'");
   c.header("Content-Type", contentType);
-  // Generated HTML/SVG must not inherit the app's authenticated origin.
+  // Generated HTML/SVG must not inherit the app's origin.
   if ([".html", ".htm", ".svg"].includes(ext)) c.header("Content-Security-Policy", "sandbox allow-scripts allow-modals");
   c.header(
     "Content-Disposition",
@@ -524,6 +524,8 @@ app.get("/api/sessions/:id/events", (c) => {
     });
   });
 });
+
+app.all("/api/*", c => c.json({ error: "Not found" }, 404));
 
 // Static frontend serving
 const clientDist = path.join(__dirname, "../client/dist");

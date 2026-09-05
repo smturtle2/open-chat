@@ -18,17 +18,11 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   const base = `http://127.0.0.1:${port}`;
   await page.goto(base);
-  await page.getByLabel('접속 키', { exact: true }).waitFor();
-  await page.screenshot({ path: '/tmp/openchat-ui-login.png' });
-  await page.getByLabel('접속 키', { exact: true }).fill('incorrect');
-  await page.getByRole('button', { name: '접속', exact: true }).click();
-  await page.getByRole('alert').waitFor();
-  await page.getByLabel('접속 키', { exact: true }).fill(process.env.OPENCHAT_AUTH_TOKEN);
-  await page.getByRole('button', { name: '접속', exact: true }).click();
+  assert.equal(await page.locator('input[type="password"]').count(), 0);
   const textarea = page.locator('textarea').first();
   await textarea.waitFor();
   await page.waitForFunction(() => document.querySelector('[data-model-trigger]')?.textContent?.includes('fixture-model'));
-  console.log('PASS browser access-key login and keyless local model picker');
+  console.log('PASS direct chat access and keyless local model picker');
 
   await textarea.fill('/');
   await page.locator('[data-slash-item]').first().waitFor();
@@ -93,12 +87,10 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: '사이드바 닫기' }).click();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
-  await page.getByRole('button', { name: '로그아웃' }).click();
-  await page.getByLabel('접속 키', { exact: true }).waitFor();
   await page.screenshot({ path: '/tmp/openchat-ui-mobile.png' });
-  assert.equal(await page.evaluate(async () => (await fetch('/api/sessions')).status), 401);
+  assert.equal(await page.evaluate(async () => (await fetch('/api/sessions')).status), 200);
   assert.deepEqual(errors, []);
-  console.log('PASS mobile width, logout and no browser runtime errors');
+  console.log('PASS mobile width, API access without credentials and no browser runtime errors');
 } finally {
   await browser?.close(); server.kill('SIGTERM');
   if (log) console.log(log.trim());

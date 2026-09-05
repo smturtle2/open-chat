@@ -191,7 +191,6 @@ usage() {
   echo ""
   echo "Usage:"
   echo "  openchat                   Start OpenChat in foreground"
-  echo "  openchat token             Show the browser access key"
   echo "  openchat service <command> Manage background systemd service"
   echo ""
   echo "Service Commands:"
@@ -206,9 +205,6 @@ usage() {
 }
 
 case "${1:-}" in
-  token)
-    cd "$APP_DIR" && exec npm run --silent auth:token
-    ;;
   service)
     subcmd="${2:-}"
     case "$subcmd" in
@@ -306,7 +302,6 @@ echo -e "${BOLD}${GREEN}   🎉 OpenChat setup & build completed successfully!  
 echo -e "${BOLD}${GREEN}=======================================================${NC}"
 
 echo -e "\n${BOLD}How to use OpenChat:${NC}"
-echo -e "  • Show browser access key:  ${BOLD}${GREEN}openchat token${NC}"
 echo -e "  • Start in foreground:      ${BOLD}${GREEN}openchat${NC}"
 echo -e "  • Register system service:  ${BOLD}${BLUE}openchat service install${NC}"
 echo -e "  • Check service status:     ${BOLD}${BLUE}openchat service status${NC}"

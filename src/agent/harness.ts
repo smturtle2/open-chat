@@ -6,6 +6,7 @@ import { tools, type ToolContext, serializeObservation } from "./tools.js";
 import { parseSingleToolArguments as parseToolArguments } from "./jsonUtils.js";
 import { buildHistory, estimateTokens } from "./context.js";
 import { resolveEndpoint } from "./providers.js";
+import { upstreamHeaders } from "./upstreamHeaders.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { chatWorkspaceDir, sessionRoot } from "./sessionPaths.js";
 import { getEndpointUrl, buildRequestBody, parseStreamData } from "./protocols.js";
@@ -201,8 +202,8 @@ export class AgentHarness {
       });
 
       const requestHeaders: Record<string, string> = {
+        ...upstreamHeaders(endpoint.baseUrl, endpoint.apiKey, sessionId),
         "Content-Type": "application/json",
-        Authorization: `Bearer ${endpoint.apiKey}`,
       };
 
       if (endpoint.protocol === "anthropic-messages") {

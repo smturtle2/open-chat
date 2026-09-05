@@ -22,5 +22,4 @@ setInterval(() => {
 
 serve({ fetch: app.fetch, port: CONFIG.PORT, hostname: CONFIG.HOST }, () => {
   console.log("[OpenChat] Listening on port " + CONFIG.PORT);
-  console.log("[OpenChat] Run npm run auth:token to display the access key.");
 });

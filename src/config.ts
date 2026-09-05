@@ -13,8 +13,6 @@ const defaultDb = fs.existsSync(localDb) ? localDb : path.join(DATA_ROOT, "openc
 export const CONFIG = {
   HOST: process.env.OPENCHAT_HOST || undefined,
   PORT: parseInt(process.env.PORT || "3000", 10),
-  AUTH_TOKEN: process.env.OPENCHAT_AUTH_TOKEN || "",
-  AUTH_TOKEN_PATH: path.join(DATA_ROOT, "auth-token"),
   ALLOWED_ORIGINS: (process.env.OPENCHAT_ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean),
   LLM_BASE_URL: process.env.LLM_BASE_URL || "https://opencode.ai/zen/go/v1",
   LLM_MODEL: process.env.LLM_MODEL || "muse-spark-1.2-contributor",

@@ -1,4 +1,3 @@
-import { apiFetch } from "../api";
 import React, { useEffect, useRef, useState } from "react";
 import { Bot, MessageCircle, PanelLeftClose, Plus, Trash2, Edit3, Settings, X, Search } from "lucide-react";
 import { useChatStore, type Session } from "../store/useChatStore";
@@ -573,7 +572,7 @@ const NewAgentSheet: React.FC<{ onClose: () => void; onCreate: (workdir: string)
     setChecking(true);
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await apiFetch(`/api/workdir/validate?path=${encodeURIComponent(trimmed)}`);
+        const res = await fetch(`/api/workdir/validate?path=${encodeURIComponent(trimmed)}`);
         setValidation(await res.json());
       } catch {
         setValidation({ ok: false, error: "검증 실패" });
