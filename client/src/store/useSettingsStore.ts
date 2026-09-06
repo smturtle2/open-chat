@@ -27,6 +27,7 @@ export interface ProviderDraft {
   base_url: string;
   api_key: string; // empty = keep existing key on edit
   enabled: boolean;
+  clear_key?: boolean;
 }
 
 /** Fixed endpoints for the well-known presets (mirrors src/agent/providers.ts). */
@@ -39,12 +40,14 @@ interface SettingsState {
   settings: AppSettingsView;
   providers: ProviderView[];
   loadingProviders: boolean;
+  providersError: string | null;
+  providersUpdatedAt: number | null;
 
   fetchSettings: () => Promise<void>;
   saveSettings: (patch: Partial<AppSettingsView>) => Promise<void>;
   fetchProviders: () => Promise<void>;
   saveProvider: (draft: ProviderDraft) => Promise<{ ok: boolean; error?: string }>;
-  deleteProvider: (id: string) => Promise<void>;
+  deleteProvider: (id: string) => Promise<{ ok: boolean; error?: string }>;
   testProvider: (id: string) => Promise<{ ok: boolean; model_count?: number; error?: string }>;
 }
 
@@ -52,6 +55,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   settings: { default_provider: "", default_model: "" },
   providers: [],
   loadingProviders: false,
+  providersError: null,
+  providersUpdatedAt: null,
 
   fetchSettings: async () => {
     try {
@@ -73,11 +78,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   fetchProviders: async () => {
-    set({ loadingProviders: true });
+    set({ loadingProviders: true, providersError: null });
     try {
       const res = await fetch("/api/providers");
-      if (res.ok) set({ providers: await res.json() });
+      if (!res.ok) throw new Error("프로바이더 목록을 불러오지 못했습니다.");
+      set({ providers: await res.json(), providersUpdatedAt: Date.now() });
     } catch {
+      set({ providersError: "프로바이더 목록을 불러오지 못했습니다. 다시 시도해 주세요." });
     } finally {
       set({ loadingProviders: false });
     }
@@ -94,7 +101,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       base_url: draft.preset === "custom" ? draft.base_url : PRESET_URLS[draft.preset],
       enabled: draft.enabled,
       // Empty api_key on update means "keep the stored key".
-      ...(draft.api_key || !exists ? { api_key: draft.api_key } : {}),
+      ...(draft.clear_key ? { api_key: "" } : draft.api_key || !exists ? { api_key: draft.api_key } : {}),
     };
     try {
       const res = await fetch(exists ? `/api/providers/${targetId}` : "/api/providers", {
@@ -116,10 +123,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   deleteProvider: async (id) => {
     try {
-      await fetch(`/api/providers/${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/providers/${id}`, { method: "DELETE" });
+      if (!res.ok) return { ok: false, error: "프로바이더를 삭제하지 못했습니다." };
       await get().fetchProviders();
       useChatStore.getState().fetchModels().catch(() => {});
-    } catch {}
+      return { ok: true };
+    } catch { return { ok: false, error: "서버에 연결할 수 없습니다. 다시 시도해 주세요." }; }
   },
 
   testProvider: async (id) => {

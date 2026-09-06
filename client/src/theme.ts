@@ -25,7 +25,7 @@ export function prefersDark(theme: ThemePreference): boolean {
 export function applyTheme(theme: ThemePreference): void {
   document.documentElement.classList.toggle("dark", prefersDark(theme));
   const meta = document.querySelector('meta[name="theme-color"]');
-  meta?.setAttribute("content", prefersDark(theme) ? "#121212" : "#ffffff");
+  meta?.setAttribute("content", prefersDark(theme) ? "#111318" : "#fcfcfd");
 }
 
 /**

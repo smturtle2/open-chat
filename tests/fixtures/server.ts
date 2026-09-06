@@ -17,14 +17,15 @@ globalThis.fetch = async (url, init) => {
   const diagram = "```mermaid\ngraph LR\n  Start --> Done\n```";
   const chunks: any[] = [];
   const content = (text: string) => ({ choices: [{ delta: { content: text } }] });
-  if (prompt.includes("react")) chunks.push(content(react));
+  if (prompt.includes("프로젝트 구조")) chunks.push(content("## 프로젝트를 한눈에 보기\n\n이 프로젝트는 **대화 화면**, **에이전트 실행**, **데이터 저장**의 세 부분으로 구성되어 있습니다.\n\n| 영역 | 주요 역할 |\n| --- | --- |\n| 프론트엔드 | 메시지 작성, 실시간 답변, 파일 미리보기 |\n| 에이전트 | 모델 호출과 도구 실행 |\n| 데이터 | 대화 기록과 작업 파일 보관 |\n\n### 다음으로 살펴볼 부분\n\n1. 사용자가 자주 사용하는 대화 흐름을 확인합니다.\n2. 실패하거나 오래 걸리는 작업을 찾습니다.\n3. 작은 화면에서도 편하게 사용할 수 있는지 점검합니다.\n\n> 변경할 때는 실제 사용 흐름을 기준으로 확인하는 것이 좋습니다."));
+  else if (prompt.includes("react")) chunks.push(content(react));
   else if (prompt.includes("mermaid")) chunks.push(content(diagram));
   else if (prompt.includes("slow")) {
     chunks.push({ choices: [{ delta: { reasoning_content: "Checking the task" } }] });
     for (let i = 0; i < 80; i++) chunks.push(content("Streaming "));
   } else if (last?.role !== "tool") {
     chunks.push({ choices: [{ delta: { reasoning_content: "Inspecting workspace" } }] });
-    chunks.push({ choices: [{ delta: { tool_calls: [{ index: 1, id: "fixture-call-" + Date.now(), type: "function", function: { name: "list_files", arguments: '{"path":"."}' } }] } }] });
+    chunks.push({ choices: [{ delta: { tool_calls: [{ index: 1, id: "fixture-call-" + Date.now(), type: "function", function: { name: "list_files", arguments: JSON.stringify({ path: prompt.includes("failed tool") ? "missing-fixture-directory" : "." }) } }] } }] });
   } else chunks.push(content("Fixture response complete."));
   chunks.push({ choices: [{ delta: {}, finish_reason: "stop" }] });
   const encoder = new TextEncoder();

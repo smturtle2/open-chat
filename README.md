@@ -48,6 +48,7 @@ Then open **`http://localhost:3000`** to start chatting. No application login is
 - **↩️ Recoverable Workspaces**: Running sessions are excluded from automatic cleanup. Inactive workspaces beyond the retention count move to a seven-day archive and restore on access. Conversation records remain in the database. Explicit session deletion removes its workspace immediately.
 - **🧩 Multi-Provider Gateway**: OpenAI, OpenRouter, OpenCode, Ollama, vLLM, or any custom API endpoint.
 - **💾 Markdown Export**: One-click conversation export and search across session history.
+- **💬 Conversation Workspace**: Drafts and attachments stay with their conversation; failed sends preserve your input, and failed edits restore the previous answer. Responsive previews, searchable model selection and keyboard-accessible dialogs work across screen sizes.
 
 ---
 

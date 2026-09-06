@@ -2,8 +2,9 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>OpenChat</title>
+    <meta name="theme-color" content="#fcfcfd" />
     <script>
       // Theme boot: apply the stored preference before first paint (FOUC fix)
       (() => {
@@ -12,12 +13,11 @@
           var dark = t === "dark" || (t === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
           document.documentElement.classList.toggle("dark", dark);
           var meta = document.querySelector('meta[name="theme-color"]');
-          if (meta) meta.setAttribute("content", dark ? "#121212" : "#ffffff");
+          if (meta) meta.setAttribute("content", dark ? "#111318" : "#fcfcfd");
         } catch (e) {}
       })();
     </script>
     <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#ffffff" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />

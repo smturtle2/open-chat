@@ -1,15 +1,22 @@
 import React, { useState, useRef, useEffect } from "react";
-import { ArrowUp, Square, ChevronUp, Check, Paperclip, X } from "lucide-react";
+import { ArrowUp, Square, ChevronDown, Check, Paperclip, X, Search, Sparkles, Loader2, RotateCcw } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
 import { useChatStore, type ModelGroup } from "../store/useChatStore";
 import { BottomSheet } from "./BottomSheet";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 
 export const PromptInput: React.FC = () => {
-  const [content, setContent] = useState("");
+  const content = useChatStore(st => st.drafts[st.currentSessionId || ""] || "");
+  const setContent = useChatStore(st => st.setDraft);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const currentSessionId = useChatStore((st) => st.currentSessionId);
   const {
     isGenerating,
+    isSubmitting,
+    isStopping,
+    isSessionLoading,
+    lastError,
     sendMessage,
     stopGeneration,
     modelGroups,
@@ -20,10 +27,19 @@ export const PromptInput: React.FC = () => {
     uploading,
     addFiles,
     removePendingAttachment,
-  } = useChatStore();
+  } = useChatStore(useShallow(st => ({
+    isGenerating: st.isGenerating, isSubmitting: st.isSubmitting, isStopping: st.isStopping,
+    isSessionLoading: st.isSessionLoading, lastError: st.lastError,
+    sendMessage: st.sendMessage, stopGeneration: st.stopGeneration, modelGroups: st.modelGroups,
+    selectedModel: st.selectedModel, selectedProvider: st.selectedProvider, setSelectedModel: st.setSelectedModel,
+    pendingAttachments: st.pendingAttachments, uploading: st.uploading, addFiles: st.addFiles,
+    removePendingAttachment: st.removePendingAttachment,
+  })));
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelFilter, setModelFilter] = useState("");
   const filterRef = useRef<HTMLInputElement>(null);
+  const [modelSaving, setModelSaving] = useState<string | null>(null);
+  const [modelError, setModelError] = useState<string | null>(null);
 
   // Slash-command autocomplete over installed skills.
   const [skills, setSkills] = useState<{ name: string; description: string }[]>([]);
@@ -91,16 +107,16 @@ export const PromptInput: React.FC = () => {
     setModelFilter("");
   };
 
-  const isTouch = typeof window !== "undefined" && (window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window);
+  const isTouch = useMediaQuery("(pointer: coarse)");
+
+  useEffect(() => {
+    setModelMenuOpen(false); setModelFilter(""); setDismissedToken(null); setSlashIdx(0);
+  }, [currentSessionId]);
 
   const handleSubmit = () => {
     const hasPending = pendingAttachments.length > 0;
-    if ((!content.trim() && !hasPending) || isGenerating || uploading) return;
+    if ((!content.trim() && !hasPending) || isGenerating || uploading || isSessionLoading) return;
     sendMessage(content);
-    setContent("");
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
   };
 
   const [isDragging, setIsDragging] = useState(false);
@@ -175,9 +191,13 @@ export const PromptInput: React.FC = () => {
     }
   };
 
-  const handleSelectModel = (modelId: string, providerId: string) => {
-    setSelectedModel(modelId, providerId);
-    closeModelMenu();
+  const handleSelectModel = async (modelId: string, providerId: string) => {
+    if (modelSaving) return;
+    setModelSaving(providerId + ":" + modelId); setModelError(null);
+    const ok = await setSelectedModel(modelId, providerId);
+    setModelSaving(null);
+    if (ok) closeModelMenu();
+    else setModelError(useChatStore.getState().lastError || "모델을 변경하지 못했습니다.");
   };
 
   const hasText = content.trim().length > 0;
@@ -200,15 +220,15 @@ export const PromptInput: React.FC = () => {
   const totalFiltered = filteredGroups.reduce((n, g) => n + g.models.length, 0);
 
   // Short display name
-  const displayModel = selectedModel.length > 28 ? selectedModel.slice(0, 28) + "…" : selectedModel;
+  const displayModel = modelGroups.find(g => g.provider_id === selectedProvider)?.models.find(m => m.id === selectedModel)?.name || selectedModel || "모델 선택";
 
   return (
-    <div className="w-full max-w-3xl mx-auto px-4 pb-4">
+    <div className="chat-width px-3 sm:px-5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-5">
       <div
-        className={`relative flex flex-col bg-white dark:bg-[#1e1e1e] rounded-2xl border shadow-xs transition-all ${
+        className={`composer relative flex flex-col ${
           isDragging
             ? "border-violet-500 bg-violet-50/50 dark:bg-violet-950/20 ring-2 ring-violet-400/30"
-            : "border-zinc-300 dark:border-zinc-700/80 focus-within:border-zinc-400 dark:focus-within:border-zinc-500"
+            : ""
         }`}
         onPaste={handlePaste}
         onDragEnter={handleDragEnter}
@@ -219,7 +239,7 @@ export const PromptInput: React.FC = () => {
         {isDragging && (
           <div className="absolute inset-0 z-30 rounded-2xl bg-violet-500/10 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
             <span className="text-xs font-medium text-violet-600 dark:text-violet-300">
-              Drop files here to attach
+              파일을 놓아 첨부하세요
             </span>
           </div>
         )}
@@ -236,7 +256,7 @@ export const PromptInput: React.FC = () => {
                 className={`w-full text-left px-3 py-2 transition-colors cursor-pointer ${i === slashIdx ? "bg-zinc-100 dark:bg-zinc-800" : ""}`}
               >
                 <div className="text-sm font-mono text-violet-600 dark:text-violet-400">/{s.name}</div>
-                {s.description && <div className="text-[11px] text-zinc-400 truncate">{s.description}</div>}
+                {s.description && <div className="text-xs text-muted truncate mt-0.5">{s.description}</div>}
               </button>
             ))}
           </div>
@@ -244,9 +264,9 @@ export const PromptInput: React.FC = () => {
 
         {/* Attachment chips */}
         {(hasAttachments || uploading) && (
-          <div className="flex flex-wrap gap-2 px-3 pt-3">
+          <div className="flex flex-wrap gap-2 px-4 pt-4">
             {pendingAttachments.map((a) => (
-              <div key={a.id} className="group relative flex items-center gap-1.5 pl-1.5 pr-6 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-[11px] font-mono text-zinc-600 dark:text-zinc-300 max-w-[220px]">
+              <div key={a.id} className="group relative flex items-center gap-2 pl-2 pr-9 py-2 rounded-xl bg-[var(--surface-soft)] border border-[var(--border)] text-xs max-w-[240px]">
                 {a.kind === "image" ? (
                   <img src={`/api/sessions/${currentSessionId}/files/${a.path}`} alt="" className="w-6 h-6 rounded object-cover flex-shrink-0" />
                 ) : (
@@ -255,62 +275,44 @@ export const PromptInput: React.FC = () => {
                 <span className="truncate">{a.name}</span>
                 <button
                   onClick={() => a.id && removePendingAttachment(a.id)}
-                  className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
-                  title="Remove"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 size-7 flex items-center justify-center rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
+                  title="첨부 삭제"
+                  aria-label={`${a.name} 첨부 삭제`}
+                  disabled={isSubmitting}
                 >
                   <X className="w-3 h-3" />
                 </button>
               </div>
             ))}
-            {uploading && <div className="px-2 py-1 text-[11px] font-mono text-zinc-400 animate-pulse">uploading…</div>}
+            {uploading && <div role="status" className="px-2 py-1 text-xs text-muted flex items-center gap-2"><Loader2 className="size-4 animate-spin" />파일 업로드 중…</div>}
           </div>
         )}
 
         {/* Textarea */}
-        <div className="flex items-end gap-2 p-2 pl-3.5">
+        <div className="px-4 pt-4 pb-2 sm:px-5 sm:pt-5">
           <textarea
             ref={textareaRef}
             value={content}
             onChange={(e) => handleChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isTouch ? "Message OpenChat..." : "Message OpenChat... (Enter to send, Shift+Enter for newline)"}
-            rows={1}
-            className="flex-1 bg-transparent text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 text-sm leading-relaxed outline-none resize-none max-h-44 py-0.5 font-sans"
+            placeholder={isSessionLoading ? "대화를 불러오는 중…" : "무엇이든 물어보세요. 파일을 첨부해도 좋아요."}
+            aria-label="메시지 입력"
+            disabled={isSessionLoading || isSubmitting || !currentSessionId}
+            rows={2}
+            className="w-full min-h-12 bg-transparent placeholder:text-muted text-[16px] leading-7 outline-none resize-none max-h-44 font-sans disabled:opacity-60"
           />
-
-          {isGenerating ? (
-            <button
-              onClick={stopGeneration}
-              className="size-9 rounded-full bg-zinc-900 dark:bg-white text-white dark:text-black flex items-center justify-center hover:opacity-85 transition-all cursor-pointer flex-shrink-0"
-              title="Stop generating"
-            >
-              <Square className="w-3 h-3 fill-current" />
-            </button>
-          ) : (
-            <button
-              onClick={handleSubmit}
-              disabled={!hasText && !hasAttachments}
-              className={`size-9 rounded-full flex items-center justify-center transition-all flex-shrink-0 ${
-                hasText || hasAttachments
-                  ? "bg-zinc-900 dark:bg-white text-white dark:text-black hover:opacity-85 cursor-pointer"
-                  : "bg-zinc-100 dark:bg-zinc-800 text-zinc-300 dark:text-zinc-600 cursor-not-allowed"
-              }`}
-              title={isTouch ? "Send" : "Send (Enter)"}
-            >
-              <ArrowUp className="w-[18px] h-[18px] stroke-[2.5]" />
-            </button>
-          )}
         </div>
 
         {/* Bottom bar with model selector trigger */}
-        <div className="flex items-center px-3 pb-2 pt-0">
+        <div className="flex items-center gap-1.5 px-2.5 sm:px-3.5 pb-3">
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={isGenerating || uploading || hasAttachments && pendingAttachments.length >= 8}
-            className="mr-1 p-1.5 rounded-md text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-            title="Attach files or images"
+            className="ui-icon-button shrink-0"
+            title="파일 또는 이미지 첨부"
+            aria-label="파일 또는 이미지 첨부"
           >
-            <Paperclip className="w-4 h-4" />
+            <Paperclip className="size-5" />
           </button>
           <input
             ref={fileInputRef}
@@ -325,26 +327,48 @@ export const PromptInput: React.FC = () => {
           <button
             data-model-trigger
             onClick={() => setModelMenuOpen(true)}
-            className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[11.5px] font-mono text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer select-none"
+            className="flex items-center gap-2 min-w-0 max-w-[70%] sm:max-w-[65%] px-2.5 py-2 rounded-xl text-[13px] font-medium text-muted hover:bg-[var(--surface-soft)] transition-colors cursor-pointer select-none disabled:opacity-50"
+            disabled={isGenerating || isSessionLoading}
+            aria-haspopup="dialog"
+            aria-expanded={modelMenuOpen}
+            title={`모델 선택: ${displayModel}`}
           >
-            <span>{displayModel}</span>
-            <ChevronUp className={`w-3 h-3 transition-transform ${modelMenuOpen ? "rotate-180" : ""}`} />
+            <Sparkles className="size-4 shrink-0 text-indigo-500 dark:text-indigo-300" />
+            <span className="truncate">{displayModel}</span>
+            <ChevronDown className="size-3.5 shrink-0" />
           </button>
+          <div className="flex-1" />
+          {isGenerating ? (
+            <button onClick={stopGeneration} disabled={isSubmitting || isStopping} className="size-10 sm:size-11 rounded-2xl bg-[var(--ink)] text-[var(--surface)] flex items-center justify-center cursor-pointer shrink-0 disabled:opacity-60" title={isStopping ? "중단 처리 중" : "응답 중단"} aria-label={isStopping ? "중단 처리 중" : "응답 중단"}>
+              {isSubmitting || isStopping ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-3.5 fill-current" />}
+            </button>
+          ) : (
+            <button onClick={handleSubmit} disabled={(!hasText && !hasAttachments) || uploading || isSessionLoading || !currentSessionId} className="size-10 sm:size-11 rounded-2xl bg-indigo-600 text-white dark:bg-indigo-400 dark:text-slate-950 flex items-center justify-center cursor-pointer shrink-0 hover:opacity-90 disabled:opacity-25 disabled:cursor-not-allowed transition-opacity" title={lastError && hasText ? "다시 보내기" : "메시지 보내기"} aria-label={lastError && hasText ? "다시 보내기" : "메시지 보내기"}>
+              {lastError && hasText ? <RotateCcw className="size-5" /> : <ArrowUp className="size-5 stroke-[2.5]" />}
+            </button>
+          )}
         </div>
+      </div>
+      <div className="hidden sm:flex items-center justify-between px-2 pt-2.5 text-xs text-muted">
+        <span>파일을 끌어 놓거나 <kbd className="font-mono">/</kbd>로 스킬을 불러오세요</span>
+        <span>{isTouch ? "" : "Enter 전송 · Shift+Enter 줄바꿈"}</span>
       </div>
 
       {/* Model selector bottom sheet */}
       {modelMenuOpen && (
-        <BottomSheet onClose={closeModelMenu}>
-          <div data-model-sheet className="pb-2">
-            <div className="px-4 pb-2">
+        <BottomSheet title="모델 선택" description="대화에 사용할 모델을 선택하세요." onClose={closeModelMenu}>
+          <div data-model-sheet className="pb-3">
+            <div className="px-5 pb-4 relative">
+              <Search className="size-4 absolute left-9 top-3.5 text-muted pointer-events-none" />
               <input
                 ref={filterRef}
+                data-autofocus
                 type="text"
                 value={modelFilter}
                 onChange={(e) => setModelFilter(e.target.value)}
-                placeholder="Search models..."
-                className="w-full bg-zinc-50 dark:bg-zinc-900 text-sm text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-700 outline-none focus:border-zinc-400 dark:focus:border-zinc-500 font-mono"
+                placeholder="모델 또는 프로바이더 검색"
+                aria-label="모델 검색"
+                className="ui-field pl-10!"
                 onKeyDown={(e) => {
                   if (e.nativeEvent.isComposing) return;
                   if (e.key === "Enter" && totalFiltered > 0) {
@@ -354,17 +378,17 @@ export const PromptInput: React.FC = () => {
                 }}
               />
             </div>
-
-            <div className="max-h-[52dvh] overflow-y-auto border-t border-zinc-100 dark:border-zinc-800 py-1.5 px-1.5">
+            {modelError && <p role="alert" className="mx-5 mb-3 text-sm text-rose-600 dark:text-rose-400">{modelError}</p>}
+            <div className="max-h-[52dvh] overflow-y-auto border-t border-[var(--border)] py-2 px-3">
               {totalFiltered === 0 ? (
                 <div className="px-3 py-3 text-sm text-zinc-400 text-center">
-                  {modelGroups.length === 0 ? "프로바이더를 먼저 설정해 주세요" : "No models found"}
+                  {modelGroups.length === 0 ? "설정에서 프로바이더를 연결하면 모델이 표시됩니다." : "검색 결과가 없습니다. 다른 이름으로 찾아보세요."}
                 </div>
               ) : (
                 filteredGroups.map((g) => (
                   <div key={g.provider_id} className="mb-1">
-                    <div className="px-3 pt-2 pb-1 text-[10.5px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-                      {g.provider_name}
+                    <div className="px-3 pt-4 pb-2 text-xs font-semibold text-muted flex items-center justify-between">
+                      {g.provider_name}<span className="font-normal">{g.models.length}개 모델</span>
                     </div>
                     {g.models.map((m) => {
                       const isActive = m.id === selectedModel && g.provider_id === selectedProvider;
@@ -372,19 +396,19 @@ export const PromptInput: React.FC = () => {
                         <button
                           key={`${g.provider_id}:${m.id}`}
                           onClick={() => handleSelectModel(m.id, g.provider_id)}
-                          className={`w-full flex items-center justify-between px-3 py-2.5 text-sm font-mono text-left rounded-xl transition-colors cursor-pointer ${
+                          disabled={!!modelSaving}
+                          aria-pressed={isActive}
+                          className={`w-full flex items-center justify-between gap-3 px-3 py-3 text-sm text-left rounded-xl transition-colors cursor-pointer disabled:opacity-60 ${
                             isActive
-                              ? "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium"
+                              ? "bg-[var(--accent-soft)] text-indigo-700 dark:text-indigo-200 font-medium"
                               : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/60 hover:text-zinc-900 dark:hover:text-zinc-200"
                           }`}
                         >
-                          <span className="truncate">
-                            {m.id}
-                            {m.name && m.name !== m.id && (
-                              <span className="ml-2 font-sans text-[11px] text-zinc-400">{m.name}</span>
-                            )}
+                          <span className="min-w-0">
+                            <span className="block truncate">{m.name || m.id}</span>
+                            {m.name && m.name !== m.id && <span className="block truncate text-xs text-muted mt-0.5 font-mono">{m.id}</span>}
                           </span>
-                          {isActive && <Check className="w-4 h-4 text-zinc-500 flex-shrink-0 ml-2" />}
+                          {modelSaving === g.provider_id + ":" + m.id ? <Loader2 className="size-4 animate-spin shrink-0" /> : isActive && <Check className="size-4 shrink-0" />}
                         </button>
                       );
                     })}

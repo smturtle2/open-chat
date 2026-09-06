@@ -1,109 +1,88 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef } from "react";
+import { createPortal } from "react-dom";
+import { X } from "lucide-react";
 
 interface BottomSheetProps {
+  title?: string;
+  description?: string;
   onClose: () => void;
   children: React.ReactNode;
+  footer?: React.ReactNode;
+  compact?: boolean;
+  fullScreen?: boolean;
+  hideHeader?: boolean;
+  returnFocus?: HTMLElement | null;
 }
 
-// Dismiss gestures: drag the grab zone down past this distance, or flick it,
-// or tap it; backdrop click and Escape also close.
-const CLOSE_THRESHOLD = 96;
-const FLICK_VELOCITY = 0.55; // px per ms
-const TAP_SLOP = 6;
-
-// Mobile-style bottom sheet: rises from the very bottom edge of the screen,
-// dimmed backdrop, draggable grab-handle bar (swipe down to dismiss).
-export const BottomSheet: React.FC<BottomSheetProps> = ({ onClose, children }) => {
-  const [dragY, setDragY] = useState<number | null>(null);
-  const [closing, setClosing] = useState(false);
-  const drag = useRef({ startY: 0, startT: 0, pointerId: -1, moved: false });
+/** Native modal behavior: inert background, focus containment and Escape. */
+export const BottomSheet: React.FC<BottomSheetProps> = ({
+  title = "상세 보기", description, onClose, children, footer, compact, fullScreen, hideHeader, returnFocus,
+}) => {
+  const ref = useRef<HTMLDialogElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const titleId = useId();
+  const descriptionId = useId();
+  const dragStart = useRef<number | null>(null);
+  const triggerRef = useRef(returnFocus || document.activeElement as HTMLElement | null);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") dismiss();
+    const dialog = ref.current!;
+    const trigger = triggerRef.current;
+    dialog.showModal();
+    dialog.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    return () => {
+      dialog.close();
+      if (trigger?.isConnected && !trigger.closest("[inert]")) trigger.focus({ preventScroll: true });
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [closing]);
+  }, []);
 
-  const dismiss = () => {
-    if (closing) return;
-    setClosing(true);
-    setTimeout(onClose, 240);
-  };
-
-  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (closing) return;
-    drag.current = { startY: e.clientY, startT: performance.now(), pointerId: e.pointerId, moved: false };
-    e.currentTarget.setPointerCapture(e.pointerId);
-    setDragY(0);
-  };
-
-  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (drag.current.pointerId !== e.pointerId || dragY === null) return;
-    const dy = Math.max(0, e.clientY - drag.current.startY);
-    if (Math.abs(e.clientY - drag.current.startY) > TAP_SLOP) drag.current.moved = true;
-    setDragY(dy);
-  };
-
-  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (drag.current.pointerId !== e.pointerId || dragY === null) return;
-    const dy = Math.max(0, e.clientY - drag.current.startY);
-    const dt = Math.max(1, performance.now() - drag.current.startT);
-    drag.current.pointerId = -1;
-    setDragY(null);
-    if (dy > CLOSE_THRESHOLD || (dy > 36 && dy / dt > FLICK_VELOCITY)) dismiss();
-  };
-
-  const transform = closing
-    ? "translateY(105%)"
-    : dragY !== null
-      ? `translateY(${dragY}px)`
-      : undefined;
-  const transition = dragY !== null ? "none" : "transform 220ms cubic-bezier(0.32, 0.72, 0.3, 1)";
-
-  return (
-    <div className="fixed inset-0 z-[70]">
-      {/* Backdrop */}
-      <div
-        className={`absolute inset-0 bg-black/30 ${closing ? "opacity-0 transition-opacity duration-200" : "animate-backdrop-in"}`}
-        onClick={dismiss}
-      />
-
-      {/* Panel */}
-      <div
-        className={`absolute inset-x-0 bottom-0 ${dragY === null && !closing ? "animate-panel-up" : ""}`}
-        style={{ transform, transition }}
-      >
-        <div className="mx-auto max-w-3xl bg-white dark:bg-zinc-900 rounded-t-2xl border border-b-0 border-zinc-200 dark:border-zinc-700 shadow-2xl overflow-hidden max-h-[85dvh] flex flex-col pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-          {/* Grab zone — swipe down / tap to dismiss */}
-          <div
-            role="button"
-            aria-label="Close sheet"
-            title="Drag down to close"
-            className="flex justify-center pt-3 pb-2 cursor-grab active:cursor-grabbing select-none"
-            style={{ touchAction: "none" }}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={endDrag}
-            onPointerCancel={() => {
-              drag.current.pointerId = -1;
-              setDragY(null);
-            }}
-            onClick={() => {
-              if (!drag.current.moved) dismiss();
-              drag.current.moved = false;
-            }}
-          >
-            <div className={`w-10 h-1.5 rounded-full transition-colors ${
-              dragY !== null
-                ? "bg-zinc-500 dark:bg-zinc-300"
-                : "bg-zinc-300 dark:bg-zinc-600 hover:bg-zinc-400 dark:hover:bg-zinc-500"
-            }`} />
-          </div>
-          {children}
-        </div>
+  return createPortal(
+    <dialog
+      ref={ref}
+      className={`ui-dialog ${fullScreen ? "ui-dialog-fullscreen" : ""}`}
+      aria-labelledby={hideHeader ? undefined : titleId}
+      aria-label={hideHeader ? title : undefined}
+      aria-describedby={description ? descriptionId : undefined}
+      onCancel={(e) => { e.preventDefault(); closeRef.current(); }}
+      onKeyDown={(e) => {
+        if (e.key !== "Tab" || e.defaultPrevented) return;
+        const controls = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button, a[href], input, textarea, select, iframe, [tabindex]')).filter(el => el.tabIndex >= 0 && !el.matches(":disabled") && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden");
+        const first = controls[0], last = controls.at(-1);
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) closeRef.current(); }}
+    >
+      <div className={`ui-dialog-panel ${compact ? "ui-dialog-compact" : ""}`}>
+        {!hideHeader && (
+          <>
+            <button
+              type="button"
+              className="ui-dialog-handle md:hidden"
+              aria-label="창 닫기"
+              onClick={onClose}
+              onPointerDown={(e) => { dragStart.current = e.clientY; e.currentTarget.setPointerCapture(e.pointerId); }}
+              onPointerUp={(e) => { if (dragStart.current !== null && e.clientY - dragStart.current > 70) onClose(); dragStart.current = null; }}
+              onPointerCancel={() => { dragStart.current = null; }}
+            >
+              <span />
+            </button>
+            <div className="ui-dialog-header">
+              <div className="min-w-0 flex-1">
+                <h2 id={titleId} className="text-lg font-semibold tracking-tight">{title}</h2>
+                {description && <p id={descriptionId} className="mt-1 text-sm text-muted leading-relaxed">{description}</p>}
+              </div>
+              <button type="button" className="ui-icon-button shrink-0" onClick={onClose} aria-label="창 닫기" title="닫기">
+                <X className="size-5" />
+              </button>
+            </div>
+          </>
+        )}
+        <div data-dialog-scroll className={`ui-dialog-body ${hideHeader ? "h-full" : ""}`}>{children}</div>
+        {footer && <div className="ui-dialog-footer">{footer}</div>}
       </div>
-    </div>
+    </dialog>,
+    document.body,
   );
 };

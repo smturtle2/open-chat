@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Pencil, RotateCcw, ChevronDown, ChevronRight } from "lucide-react";
+import { Pencil, RotateCcw, ChevronDown, ChevronRight, Sparkles, Code2, FileText, Lightbulb, ArrowDown, Copy, Check, Paperclip, Loader2, AlertCircle, X } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
 import { useChatStore, Message } from "../store/useChatStore";
 import { MarkdownView } from "./MarkdownView";
 import { StepEntry } from "./Steps";
 import { StepSheet } from "./StepSheet";
+import { copyText } from "../clipboard";
 
 type TurnSegment =
   | { type: "steps"; entries: StepEntry[]; live?: boolean }
@@ -22,16 +24,27 @@ export const ChatView: React.FC = () => {
     currentContent,
     activeToolCalls,
     isGenerating,
+    isSessionLoading,
+    isSubmitting,
     editMessage,
     regenerateMessage,
     lastError,
     clearError,
-  } = useChatStore();
+  } = useChatStore(useShallow(st => ({
+    currentSessionId: st.currentSessionId, messages: st.messages, currentThought: st.currentThought,
+    currentContent: st.currentContent, activeToolCalls: st.activeToolCalls, isGenerating: st.isGenerating,
+    isSessionLoading: st.isSessionLoading, isSubmitting: st.isSubmitting,
+    editMessage: st.editMessage, regenerateMessage: st.regenerateMessage, lastError: st.lastError, clearError: st.clearError,
+  })));
+  const setDraft = useChatStore(st => st.setDraft);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
+  const [showJump, setShowJump] = useState(false);
+  const [copiedTurn, setCopiedTurn] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
 
   // Sticky auto-scroll: follow the stream only while the user is already at
   // the bottom. Scrolling up detaches until they return near the bottom.
@@ -39,26 +52,30 @@ export const ChatView: React.FC = () => {
     const el = scrollContainerRef.current;
     if (!el) return;
     stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    setShowJump(!stickToBottomRef.current);
   };
 
   // Re-attach to bottom when switching sessions
   useEffect(() => {
     stickToBottomRef.current = true;
+    setShowJump(false); setEditingMsgId(null); setSheetKey(null);
   }, [currentSessionId]);
 
-  const isEmpty = messages.length === 0 && !isGenerating;
+  const isEmpty = messages.length === 0 && !isGenerating && !isSessionLoading;
 
   // Build tool observations lookup map (plus image URLs for view_image results)
   const toolObservations = React.useMemo(() => {
     const map: Record<string, string> = {};
     const imageUrls: Record<string, string> = {};
+    const statuses: Record<string, Message["tool_status"]> = {};
     for (const msg of messages) {
       if (msg.role === "tool" && msg.tool_call_id) {
         map[msg.tool_call_id] = msg.content;
         if (msg.imageUrl) imageUrls[msg.tool_call_id] = msg.imageUrl;
+        statuses[msg.tool_call_id] = msg.tool_status;
       }
     }
-    return { map, imageUrls };
+    return { map, imageUrls, statuses };
   }, [messages]);
 
   // Persisted content only.
@@ -108,7 +125,7 @@ export const ChatView: React.FC = () => {
           const obs = toolObservations.map[tc.id];
           const activeStatus = activeToolCalls.find((a) => a.id === tc.id)?.status;
           pendingEntries.push({
-            item: { kind: "tool", id: tc.id, name, args, obs, imageUrl: toolObservations.imageUrls[tc.id] },
+            item: { kind: "tool", id: tc.id, name, args, obs, imageUrl: toolObservations.imageUrls[tc.id], status: toolObservations.statuses[tc.id] },
             running: activeStatus === "running",
           });
         }
@@ -163,7 +180,7 @@ export const ChatView: React.FC = () => {
     for (const t of activeToolCalls) {
       if (existingToolIds.has(t.id)) continue;
       liveEntries.push({
-        item: { kind: "tool", id: t.id, name: t.name, args: t.args },
+        item: { kind: "tool", id: t.id, name: t.name, args: t.args, obs: t.observation, status: t.tool_status },
         running: t.status === "running",
       });
     }
@@ -193,7 +210,7 @@ export const ChatView: React.FC = () => {
     if (el && stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [displayTurns, currentContent, isGenerating]);
+  }, [displayTurns, currentContent, isGenerating, lastError, isSessionLoading]);
 
   const [sheetKey, setSheetKey] = useState<string | null>(null);
 
@@ -202,10 +219,9 @@ export const ChatView: React.FC = () => {
     setEditingContent(msg.content);
   };
 
-  const handleSaveEdit = (msgId: string) => {
+  const handleSaveEdit = async (msgId: string) => {
     if (!editingContent.trim()) return;
-    editMessage(msgId, editingContent.trim());
-    setEditingMsgId(null);
+    if (await editMessage(msgId, editingContent.trim())) setEditingMsgId(null);
   };
 
   let sheetEntries: StepEntry[] | null = null;
@@ -235,15 +251,26 @@ export const ChatView: React.FC = () => {
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="absolute inset-0 overflow-y-auto px-4 md:px-8 py-6"
+        className="absolute inset-0 overflow-y-auto px-4 md:px-8 py-6 md:py-8"
         style={{ touchAction: "pan-y" }}
       >
-        <div className="w-full max-w-3xl mx-auto space-y-8 pb-8">
-          {isEmpty ? (
-            <div className="py-20 flex flex-col items-center justify-center text-center space-y-1 select-none">
-              <h1 className="text-xl font-semibold text-zinc-900 dark:text-white">
-                What can I help with?
-              </h1>
+        <div className="chat-width space-y-9 pb-5">
+          {isSessionLoading ? (
+            <div data-session-loading role="status" className="py-20 flex flex-col items-center gap-3 text-sm text-muted"><Loader2 className="size-6 animate-spin text-indigo-500" />대화를 불러오는 중…</div>
+          ) : isEmpty ? (
+            <div className="min-h-[44dvh] py-6 sm:py-12 flex flex-col items-center justify-center text-center">
+              <div className="size-14 sm:size-16 rounded-[22px] bg-[var(--accent-soft)] text-indigo-600 dark:text-indigo-300 flex items-center justify-center mb-6"><Sparkles className="size-7" /></div>
+              <h2 className="text-[27px] sm:text-4xl leading-tight font-semibold tracking-tight">무엇을 함께 해볼까요?</h2>
+              <p className="mt-3 text-sm sm:text-base text-muted leading-relaxed">질문을 적거나 파일을 첨부해 대화를 시작하세요.</p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3 mt-8 sm:mt-10 w-full max-w-2xl text-left">
+                {[
+                  { icon: Code2, title: "코드 살펴보기", detail: "문제를 찾고 더 나은 방법으로", prompt: "이 코드를 검토하고 개선할 부분을 알려줘.\n\n" },
+                  { icon: FileText, title: "내용 정리하기", detail: "긴 글에서 핵심만 명확하게", prompt: "아래 내용의 핵심과 다음 할 일을 정리해줘.\n\n" },
+                  { icon: Lightbulb, title: "아이디어 구체화", detail: "막연한 생각을 실행 계획으로", prompt: "아이디어를 구체적인 계획으로 만들고 싶어. 먼저 필요한 질문을 해줘." },
+                ].map(({ icon: Icon, title, detail, prompt }) => <button key={title} onClick={() => { setDraft(prompt); document.querySelector<HTMLTextAreaElement>('textarea[aria-label="메시지 입력"]')?.focus(); }} className="flex sm:flex-col items-center sm:items-start gap-3 sm:gap-4 px-4 py-3.5 sm:p-5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] hover:border-indigo-300 dark:hover:border-indigo-500 hover:bg-[var(--accent-soft)] transition-colors cursor-pointer group">
+                  <Icon className="size-5 shrink-0 text-muted group-hover:text-indigo-500 dark:group-hover:text-indigo-300" /><span><span className="block text-sm font-medium">{title}</span><span className="block mt-1 text-xs text-muted">{detail}</span></span>
+                </button>)}
+              </div>
             </div>
           ) : (
             <>
@@ -258,9 +285,9 @@ export const ChatView: React.FC = () => {
                     {/* 1. User Message Block */}
                     {turn.userMsg && (
                       <div className="flex w-full justify-end">
-                        <div className="max-w-[85%] sm:max-w-[75%] space-y-1 flex flex-col items-end">
+                        <div className="max-w-[92%] sm:max-w-[80%] min-w-0 space-y-1 flex flex-col items-end">
                           {isEditing ? (
-                            <div className="w-full min-w-[280px] sm:min-w-[360px] bg-white dark:bg-zinc-800 p-2.5 rounded-xl border border-zinc-300 dark:border-zinc-600 shadow-sm space-y-2">
+                            <div className="w-full min-w-0 sm:min-w-[360px] bg-[var(--surface)] p-4 rounded-2xl border border-indigo-300 dark:border-indigo-500 shadow-sm space-y-3">
                               <textarea
                                 value={editingContent}
                                 onChange={(e) => setEditingContent(e.target.value)}
@@ -283,21 +310,25 @@ export const ChatView: React.FC = () => {
                                   }
                                 }}
                                 rows={3}
+                                aria-label="메시지 수정"
+                                disabled={isSubmitting}
                                 className="w-full bg-transparent text-sm text-zinc-900 dark:text-zinc-100 outline-none resize-none"
                                 autoFocus
                               />
                               <div className="flex items-center justify-end gap-2 text-xs">
                                 <button
                                   onClick={() => setEditingMsgId(null)}
-                                  className="px-2.5 py-1 rounded-md text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors cursor-pointer"
+                                  disabled={isSubmitting}
+                                  className="ui-button"
                                 >
-                                  Cancel
+                                  취소
                                 </button>
                                 <button
                                   onClick={() => handleSaveEdit(turn.userMsg!.id)}
-                                  className="px-2.5 py-1 rounded-md bg-zinc-900 dark:bg-white text-white dark:text-black font-medium hover:opacity-85 transition-opacity cursor-pointer"
+                                  disabled={isSubmitting || !editingContent.trim()}
+                                  className="ui-button ui-button-primary"
                                 >
-                                  Save & Submit
+                                  {isSubmitting ? "전송 중…" : "수정 후 보내기"}
                                 </button>
                               </div>
                             </div>
@@ -317,14 +348,12 @@ export const ChatView: React.FC = () => {
                                         <img src={`/api/sessions/${currentSessionId}/files/${a.path}`} alt={a.name} className="max-h-44 max-w-[220px] object-cover" />
                                       </a>
                                     ) : a.kind === "skill" ? null : (
-                                      <span key={a.path} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-zinc-100 dark:bg-zinc-800 text-[11px] font-mono text-zinc-600 dark:text-zinc-300">
-                                        {a.name} · {(a.size / 1024).toFixed(0)}KB
-                                      </span>
+                                      <a key={a.path} href={`/api/sessions/${currentSessionId}/files/${a.path}`} download={a.name} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-[var(--surface)] border border-[var(--border)] text-xs max-w-full hover:border-indigo-300"><Paperclip className="size-3.5 shrink-0" /><span className="truncate">{a.name}</span><span className="text-muted shrink-0">{(a.size / 1024).toFixed(0)} KB</span></a>
                                     )
                                   )}
                                 </div>
                               )}
-                              <div className="bg-[#f4f4f5] dark:bg-[#27272a] text-zinc-900 dark:text-zinc-100 px-4 py-2.5 rounded-2xl text-[15px] leading-relaxed whitespace-pre-wrap">
+                              <div className="bg-[var(--surface-soft)] border border-[var(--border)] px-4 sm:px-5 py-3 rounded-[20px] rounded-br-md text-[15px] leading-relaxed min-w-0 max-w-full">
                                 <MarkdownView
                                   content={(() => {
                                     const c = turn.userMsg.content;
@@ -337,20 +366,16 @@ export const ChatView: React.FC = () => {
                               </div>
 
                               {/* Action Buttons below User Bubble */}
-                              <div className="flex items-center gap-2.5 text-zinc-400 dark:text-zinc-500 pr-1 pt-0.5">
+                              <div className="flex items-center gap-2 text-muted pr-1 pt-1">
+                                {turn.userMsg.sending && <span className="text-xs">전송 중…</span>}
                                 <button
                                   onClick={() => handleStartEdit(turn.userMsg!)}
-                                  className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 transition-colors cursor-pointer"
-                                  title="Edit this message"
+                                  className="ui-icon-button size-8!"
+                                  title="메시지 수정"
+                                  aria-label="메시지 수정"
+                                  disabled={isGenerating}
                                 >
                                   <Pencil className="w-3.5 h-3.5" />
-                                </button>
-                                <button
-                                  onClick={() => regenerateMessage(turn.userMsg!.id)}
-                                  className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 transition-colors cursor-pointer"
-                                  title="Regenerate response from this message"
-                                >
-                                  <RotateCcw className="w-3.5 h-3.5" />
                                 </button>
                               </div>
                             </>
@@ -360,9 +385,10 @@ export const ChatView: React.FC = () => {
                     )}
 
                     {/* 2. Assistant Turn Segments — minimal inline step text + text */}
-                    {(turn.segments.length > 0 || (showStreamTail && !currentContent)) && (
+                    {(turn.segments.length > 0 || showStreamTail) && (
                       <div className="flex w-full justify-start">
-                        <div className="w-full max-w-full space-y-3 text-zinc-900 dark:text-zinc-100 text-[15px] leading-relaxed">
+                        <div className="w-full min-w-0 space-y-4 text-[15px] leading-7">
+                          <div className="flex items-center gap-2 text-sm font-semibold select-none"><span className="size-7 rounded-lg bg-[var(--accent-soft)] text-indigo-600 dark:text-indigo-300 flex items-center justify-center"><Sparkles className="size-3.5" /></span>OpenChat</div>
                           {turn.segments.map((seg, segIdx) => {
                             if (seg.type === "steps") {
                               let ord = -1;
@@ -374,23 +400,28 @@ export const ChatView: React.FC = () => {
                               const isSheetOpen = sheetKey === segKey;
                               const hasActivity = seg.entries.some((e) => e.streaming || e.running);
                               const activeEntry = seg.entries.find((e) => e.running || e.streaming);
+                              const failedCount = seg.entries.filter(e => e.item.kind === "tool" && e.item.status?.ok === false).length;
 
                               // Live active text while running, clean 'N steps' when finished
-                              let summaryLabel = `${totalSteps} step${totalSteps > 1 ? "s" : ""}`;
+                              let summaryLabel = `${totalSteps}개 단계`;
                               if (activeEntry) {
-                                summaryLabel = activeEntry.item.kind === "think" ? "Thinking…" : `Running ${activeEntry.item.name}…`;
+                                summaryLabel = activeEntry.item.kind === "think" ? "생각을 정리하는 중…" : `${activeEntry.item.name} 실행 중…`;
                               }
+                              if (failedCount) summaryLabel += ` · ${failedCount}개 실패`;
 
                               return (
                                 <div key={segKey} className="py-0.5">
                                   <button
+                                    data-steps-trigger
                                     onClick={() => setSheetKey(sheetKey === segKey ? null : segKey)}
-                                    className="inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 cursor-pointer select-none transition-colors group"
+                                    aria-haspopup="dialog"
+                                    aria-expanded={isSheetOpen}
+                                    className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs cursor-pointer select-none transition-colors group ${failedCount ? "border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/20" : "border-[var(--border)] text-muted hover:bg-[var(--surface-soft)]"}`}
                                   >
                                     {seg.live && hasActivity && (
                                       <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse flex-shrink-0" />
                                     )}
-                                    <span className="font-mono text-[11.5px] group-hover:underline">
+                                    <span className="font-medium">
                                       {summaryLabel}
                                     </span>
                                     {isSheetOpen ? (
@@ -429,6 +460,11 @@ export const ChatView: React.FC = () => {
                               <span className="typing-dot-wave" />
                             </div>
                           )}
+                          {!showStreamTail && turn.segments.some(s => s.type === "text") && <div className="flex items-center gap-1 text-muted pt-1">
+                            <button className="ui-icon-button size-8!" title={copiedTurn === turnKey ? "복사됨" : "답변 복사"} aria-label="답변 복사" onClick={async () => { const ok = await copyText(turn.segments.filter((s): s is Extract<TurnSegment, { type: "text" }> => s.type === "text").map(s => s.content).join("\n\n")); setCopiedTurn(ok ? turnKey : null); setCopyError(ok ? null : turnKey); if (ok) setTimeout(() => setCopiedTurn(null), 2000); }}>{copiedTurn === turnKey ? <Check className="size-4 text-emerald-500" /> : <Copy className="size-4" />}</button>
+                            {turn.userMsg && <button className="ui-icon-button size-8!" title="답변 다시 생성" aria-label="답변 다시 생성" disabled={isGenerating} onClick={() => regenerateMessage(turn.userMsg!.id)}><RotateCcw className="size-4" /></button>}
+                            {copyError === turnKey && <span role="status" className="text-xs text-amber-600 dark:text-amber-400">복사 권한을 확인하거나 내용을 직접 선택해 주세요.</span>}
+                          </div>}
                         </div>
                       </div>
                     )}
@@ -442,23 +478,24 @@ export const ChatView: React.FC = () => {
           {lastError && (
             <div
               data-error-notice
+              role="alert"
               className="flex items-start justify-between gap-3 rounded-xl border border-red-300/70 dark:border-red-500/30 bg-red-50 dark:bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300"
             >
-              <span className="leading-relaxed">
-                <span className="font-semibold">Task failed: </span>
-                {lastError}
-              </span>
+              <AlertCircle className="size-4 shrink-0 mt-1" />
+              <div className="leading-relaxed flex-1 min-w-0"><p className="font-semibold mb-0.5">요청을 완료하지 못했습니다</p><p className="break-words">{lastError}</p>{messages.length === 0 && <button className="text-xs font-medium underline underline-offset-4 mt-2 cursor-pointer" onClick={() => currentSessionId ? useChatStore.getState().selectSession(currentSessionId) : useChatStore.getState().fetchSessions()}>다시 불러오기</button>}</div>
               <button
                 onClick={clearError}
-                title="Dismiss"
+                title="오류 알림 닫기"
+                aria-label="오류 알림 닫기"
                 className="flex-shrink-0 rounded px-1.5 text-red-400 hover:text-red-600 dark:hover:text-red-200 transition-colors cursor-pointer"
               >
-                ✕
+                <X className="size-4" />
               </button>
             </div>
           )}
         </div>
       </div>
+      {showJump && <button className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full bg-[var(--surface)] border border-[var(--border)] shadow-lg text-xs font-medium cursor-pointer hover:bg-[var(--surface-soft)] z-20" onClick={() => { const el = scrollContainerRef.current; if (el) { stickToBottomRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: "smooth" }); } }}><ArrowDown className="size-4" />최근 메시지로</button>}
 
       {/* Bottom sheet with the steps details of the toggled group */}
       {sheetEntries && (

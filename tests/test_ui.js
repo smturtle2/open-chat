@@ -32,6 +32,7 @@ try {
   console.log('PASS slash autocomplete keyboard selection');
 
   const send = async text => {
+    await page.getByRole('button', { name: /^(메시지 보내기|다시 보내기)$/ }).waitFor();
     await textarea.fill(text);
     const submitted = page.waitForResponse(response => response.request().method() === 'POST' && /\/messages$/.test(new URL(response.url()).pathname));
     await textarea.press('Enter');
@@ -47,7 +48,7 @@ try {
   };
   await send('flow');
   await page.getByText('Fixture response complete.', { exact: true }).waitFor();
-  await page.locator('button').filter({ hasText: /^\d+ steps?$/ }).last().click();
+  await page.locator('[data-steps-trigger]').last().click();
   await page.locator('[data-step-sheet]').waitFor();
   assert.match(await page.locator('[data-step-sheet]').innerText(), /list_files/);
   await page.keyboard.press('Escape');
@@ -59,7 +60,7 @@ try {
   await page.getByText(/Streaming Streaming/).first().waitFor();
   const live = await sessionData();
   assert.equal(live.status, 'running'); assert.ok(live.run.content.includes('Streaming'));
-  await page.getByTitle('Stop generating').click();
+  await page.getByRole('button', { name: '응답 중단', exact: true }).click();
   await send('flow again');
   await waitIdle();
   const afterStop = await sessionData();
@@ -86,6 +87,7 @@ try {
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: '사이드바 닫기' }).click();
+  await page.waitForFunction(() => document.querySelector('aside[aria-label="대화 목록"]').getBoundingClientRect().right <= 1);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
   await page.screenshot({ path: '/tmp/openchat-ui-mobile.png' });
   assert.equal(await page.evaluate(async () => (await fetch('/api/sessions')).status), 200);

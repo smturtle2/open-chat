@@ -3,6 +3,7 @@ import { marked, Renderer } from "marked";
 import hljs from "highlight.js/lib/common";
 import katex from "katex";
 import DOMPurify from "dompurify";
+import { copyText } from "../clipboard";
 import { useChatStore } from "../store/useChatStore";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
@@ -20,7 +21,7 @@ function escapeHtml(text: string): string {
 }
 
 const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
-  const { currentSessionId } = useChatStore();
+  const currentSessionId = useChatStore(st => st.currentSessionId);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const renderedHtml = useMemo(() => {
@@ -145,32 +146,32 @@ const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
       else if (["jsx", "tsx", "react"].includes(lang.toLowerCase())) artifactKind = "react";
       else if (lang.toLowerCase() === "markdown") artifactKind = "markdown";
 
-      const artifactTitle = `${lang.toUpperCase()} Component`;
+      const artifactTitle = `${lang.toUpperCase()} ${artifactKind === "react" ? "컴포넌트" : artifactKind === "mermaid" ? "다이어그램" : "코드"}`;
 
       return `
         <div class="code-container my-2.5 rounded-xl overflow-hidden border border-zinc-200/80 dark:border-zinc-800 bg-[#18181b] font-mono text-[13px] shadow-xs">
-          <div class="flex items-center justify-between px-3 py-1.5 bg-[#202023] text-zinc-400 text-xs select-none">
-            <span class="font-medium text-[11px] text-zinc-300">${escapeAttr(language)}</span>
+          <div class="flex items-center justify-between gap-2 px-3 py-2 bg-[#202023] text-zinc-400 text-xs select-none">
+            <span class="font-medium text-xs text-zinc-300">${escapeAttr(language)}</span>
             <div class="flex items-center gap-1.5">
               ${
                 isArtifactType
                   ? `<button
                       type="button"
-                      class="open-artifact-btn px-2 py-0.5 rounded text-[11px] font-medium text-amber-400 hover:text-amber-300 hover:bg-zinc-700/60 transition-colors cursor-pointer flex items-center gap-1"
+                      class="open-artifact-btn px-2.5 py-1.5 rounded-lg text-xs font-medium text-indigo-300 hover:text-indigo-200 hover:bg-zinc-700/60 transition-colors cursor-pointer flex items-center gap-1"
                       data-artifact-title="${escapeAttr(artifactTitle)}"
                       data-artifact-type="${escapeAttr(artifactKind)}"
                       data-artifact-code="${encodedCode}"
                     >
-                      <span>⚡ Open Artifact</span>
+                      <span>${artifactKind === "code" ? "코드 열기" : "미리보기"} ↗</span>
                     </button>`
                   : ""
               }
               <button
                 type="button"
-                class="copy-code-btn px-1.5 py-0.5 rounded text-[11px] hover:text-white hover:bg-zinc-700 transition-colors cursor-pointer"
+                class="copy-code-btn px-2 py-1.5 rounded-lg text-xs hover:text-white hover:bg-zinc-700 transition-colors cursor-pointer"
                 data-code="${encodedCode}"
               >
-                <span>Copy</span>
+                <span>복사</span>
               </button>
             </div>
           </div>
@@ -195,16 +196,17 @@ const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const onClick = (e: MouseEvent) => {
+    const onClick = async (e: MouseEvent) => {
       const target = e.target as HTMLElement;
 
       // 1. Copy button
       const copyBtn = target.closest?.(".copy-code-btn") as HTMLButtonElement | null;
       if (copyBtn) {
-        navigator.clipboard.writeText(decodeURIComponent(copyBtn.getAttribute("data-code") || ""));
+        const ok = await copyText(decodeURIComponent(copyBtn.getAttribute("data-code") || ""));
         const label = copyBtn.querySelector("span") || copyBtn;
-        const originalText = label.textContent || "Copy";
-        label.textContent = "Copied!";
+        const originalText = label.textContent || "복사";
+        label.textContent = ok ? "복사됨" : "복사 실패";
+        copyBtn.title = ok ? "코드를 복사했습니다." : "복사 권한을 확인하거나 코드를 직접 선택해 주세요.";
         setTimeout(() => {
           label.textContent = originalText;
         }, 2000);
@@ -233,7 +235,7 @@ const MarkdownView: React.FC<MarkdownViewProps> = ({ content }) => {
   return (
     <div
       ref={containerRef}
-      className="markdown-content text-sm leading-relaxed text-zinc-900 dark:text-zinc-100 space-y-2"
+      className="markdown-content text-[15px] leading-7 space-y-3"
       dangerouslySetInnerHTML={{ __html: renderedHtml }}
     />
   );

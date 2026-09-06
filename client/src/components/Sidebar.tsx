@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Bot, MessageCircle, PanelLeftClose, Plus, Trash2, Edit3, Settings, X, Search } from "lucide-react";
+import { Bot, MessageCircle, PanelLeftClose, Plus, Trash2, Edit3, Settings, X, Search, SquarePen, Sparkles, ChevronRight } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
 import { useChatStore, type Session } from "../store/useChatStore";
 import { BottomSheet } from "./BottomSheet";
 import { SettingsSheet } from "./SettingsSheet";
 
-const W = 240; // drawer width (px)
+const W = 272; // drawer width (px)
 const SLOP = 10; // px before the axis locks (vaul-style)
 const REVEAL_X = 64; // exposed action strip width
 const PANEL_EASE = "translate 180ms cubic-bezier(0.32, 0.72, 0.3, 1)";
@@ -21,8 +22,11 @@ export const Sidebar: React.FC = () => {
     selectSession,
     deleteSession,
     renameSession,
-    selectedModel,
-  } = useChatStore();
+  } = useChatStore(useShallow(st => ({
+    sessions: st.sessions, currentSessionId: st.currentSessionId, sidebarOpen: st.sidebarOpen,
+    setSidebarOpen: st.setSidebarOpen, createSession: st.createSession, selectSession: st.selectSession,
+    deleteSession: st.deleteSession, renameSession: st.renameSession,
+  })));
 
   const [searchQuery, setSearchQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -45,6 +49,23 @@ export const Sidebar: React.FC = () => {
   useEffect(() => {
     if (!sidebarOpen) setRevealId(null);
   }, [sidebarOpen]);
+
+  useEffect(() => {
+    if (!sidebarOpen || window.innerWidth >= 768) return;
+    const previous = document.activeElement as HTMLElement | null;
+    asideRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const keydown = (e: KeyboardEvent) => {
+      if (document.querySelector("dialog[open]")) return;
+      if (e.key === "Escape") { e.preventDefault(); setSidebarOpen(false); }
+      if (e.key !== "Tab") return;
+      const controls = Array.from(asideRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input, [tabindex="0"]') || []).filter(el => el.getClientRects().length);
+      const first = controls[0], last = controls.at(-1);
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener("keydown", keydown);
+    return () => { document.removeEventListener("keydown", keydown); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
+  }, [sidebarOpen, setSidebarOpen]);
 
   // ------------------------------------------------------------------
   // Gesture recognizer, modeled on vaul's pointer-drag implementation:
@@ -132,6 +153,7 @@ export const Sidebar: React.FC = () => {
 
     const onDown = (e: PointerEvent) => {
       if (g) return;
+      if (document.querySelector("dialog[open]")) return;
       if (useChatStore.getState().activeArtifact) return;
       clearTimeout(lpTimer);
       suppressClick.current = false;
@@ -299,18 +321,18 @@ export const Sidebar: React.FC = () => {
     setEditingTitle(currentTitle);
   };
 
-  const handleSaveRename = (id: string, e?: React.SyntheticEvent) => {
+  const handleSaveRename = async (id: string, e?: React.SyntheticEvent) => {
     e?.stopPropagation();
     if (editingTitle.trim()) {
-      renameSession(id, editingTitle.trim());
+      if (!await renameSession(id, editingTitle.trim())) return;
     }
     setEditingId(null);
     setRevealId(null);
   };
 
-  const handleConfirmDelete = (id: string, e: React.MouseEvent) => {
+  const handleConfirmDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    deleteSession(id);
+    if (!await deleteSession(id)) return;
     setDeletingId(null);
     setRevealId(null);
   };
@@ -322,12 +344,10 @@ export const Sidebar: React.FC = () => {
     const revealed = revealId === s.id;
 
     return (
-      <div key={s.id} data-row={s.id} className="relative rounded-lg overflow-hidden group">
+      <div key={s.id} data-row={s.id} className="relative rounded-xl overflow-hidden group">
         {/* Action layer underneath */}
         <div
-          className={`absolute inset-y-0 right-0 flex items-center gap-1 pl-10 pr-2.5 rounded-lg ${
-            isSelected ? "bg-zinc-200 dark:bg-zinc-800" : "bg-[#f9f9fb] dark:bg-[#141416]"
-          } ${revealed ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+          className={`session-actions absolute z-10 inset-y-0 right-0 flex items-center gap-0.5 pl-1 pr-1 rounded-xl bg-[var(--surface-soft)] ${revealed ? "opacity-100" : "opacity-0 pointer-events-none md:group-hover:opacity-100 md:group-hover:pointer-events-auto md:group-focus-within:opacity-100 md:group-focus-within:pointer-events-auto"}`}
         >
           {!isEditing && !isDeleting && (
             <>
@@ -355,6 +375,10 @@ export const Sidebar: React.FC = () => {
         {/* Sliding row content */}
         <div
           data-row-content
+          role={!isEditing && !isDeleting ? "button" : undefined}
+          tabIndex={!isEditing && !isDeleting ? 0 : undefined}
+          aria-current={isSelected ? "page" : undefined}
+          onKeyDown={(e) => { if (!isEditing && !isDeleting && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); selectSession(s.id); if (window.innerWidth < 768) setSidebarOpen(false); } }}
           onClick={() => {
             if (suppressClick.current) return;
             selectSession(s.id);
@@ -365,9 +389,9 @@ export const Sidebar: React.FC = () => {
             transition: ROW_EASE,
             transform: `translateX(${revealed ? -REVEAL_X : 0}px)`,
           }}
-          className={`relative flex items-center justify-between px-3 py-2 rounded-lg text-[13px] cursor-pointer select-none ${
+          className={`relative flex items-center justify-between px-3 py-3 rounded-xl text-[13px] cursor-pointer select-none min-h-11 ${
             isSelected
-              ? "bg-zinc-200/80 dark:bg-zinc-800 text-zinc-950 dark:text-zinc-100 font-medium"
+              ? "bg-[var(--accent-soft)] text-indigo-800 dark:text-indigo-100 font-medium"
               : "text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/40 dark:hover:bg-zinc-800/50 hover:text-zinc-900 dark:hover:text-zinc-200"
           }`}
         >
@@ -409,7 +433,8 @@ export const Sidebar: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <><span className="truncate">{s.title}</span>
+              <><span className="truncate">{s.title === "New Chat" ? "새 대화" : s.title === "New Agent" ? "새 에이전트" : s.title}</span>
+                {s.status === "running" && <span className="size-1.5 rounded-full bg-indigo-500 animate-pulse shrink-0" aria-label="응답 중" />}
                 {s.workspace_state === "archived" && <span className="text-[10px] text-zinc-400 shrink-0" title="접근하면 보관된 작업폴더를 복원합니다.">보관됨</span>}
                 {s.workspace_state === "missing" && <span className="text-[10px] text-zinc-400 shrink-0" title="작업폴더가 없습니다. 대화 기록은 남아 있습니다.">폴더 없음</span>}
               </>
@@ -421,15 +446,15 @@ export const Sidebar: React.FC = () => {
   };
 
   const sectionHeader = (label: string, count: number, onCreate: () => void) => (
-    <div className="flex items-center justify-between pl-2 pr-1 pt-3 pb-1">
-      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 flex items-center gap-1.5">
+    <div className="flex items-center justify-between pl-3 pr-1 pt-4 pb-1.5">
+      <span className="text-xs font-medium text-muted flex items-center gap-1.5">
         {label}
         {count > 0 && <span className="font-mono font-normal text-zinc-300 dark:text-zinc-600">{count}</span>}
       </span>
       <button
         onClick={onCreate}
         title={`${label} 새로 만들기`}
-        className="p-1 rounded text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+        className="ui-icon-button size-8!"
       >
         <Plus className="w-3.5 h-3.5" />
       </button>
@@ -444,8 +469,6 @@ export const Sidebar: React.FC = () => {
 
   const agentSessions = filteredSessions.filter((s) => s.mode === "agent");
   const chatSessions = filteredSessions.filter((s) => s.mode !== "agent");
-
-  const shortModel = selectedModel.length > 24 ? selectedModel.slice(0, 24) + "…" : selectedModel;
 
   return (
     <>
@@ -462,40 +485,43 @@ export const Sidebar: React.FC = () => {
 
       <aside
         ref={asideRef}
+        inert={!sidebarOpen}
+        aria-label="대화 목록"
         style={{ transition: PANEL_EASE, touchAction: "pan-y" }}
-        className={`fixed md:static inset-y-0 left-0 z-40 w-[240px] bg-[#f9f9fb] dark:bg-[#141416] border-r border-zinc-200/70 dark:border-zinc-800 flex flex-col ${
+        className={`fixed md:static inset-y-0 left-0 z-40 w-[272px] shrink-0 bg-[#f5f6f9] dark:bg-[#15181f] border-r border-[var(--border)] flex flex-col ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full md:-translate-x-full md:w-0 md:border-none overflow-hidden"
         }`}
       >
         {/* Top Header */}
-        <div className="p-3 pb-1 flex-shrink-0">
-          <div className="flex items-center justify-between px-1">
-            <span className="font-semibold text-sm text-zinc-900 dark:text-zinc-100 tracking-tight">
-              OpenChat
-            </span>
+        <div className="px-4 pt-3 pb-1 flex-shrink-0">
+          <div className="flex items-center justify-between h-10 mb-4">
+            <span className="font-semibold text-[17px] tracking-tight flex items-center gap-2.5"><span className="size-8 rounded-xl bg-indigo-600 dark:bg-indigo-400 text-white dark:text-slate-950 flex items-center justify-center"><Sparkles className="size-4" /></span>OpenChat</span>
             <button
               onClick={() => setSidebarOpen(false)}
               aria-label="사이드바 닫기"
-              className="p-1 rounded text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/50 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+              className="ui-icon-button"
             >
-              <PanelLeftClose className="w-3.5 h-3.5" />
+              <PanelLeftClose className="size-4" />
             </button>
           </div>
+          <button className="ui-button ui-button-primary w-full justify-start!" onClick={() => createSession("chat")}><SquarePen className="size-4" />새 대화</button>
 
           {/* Search Box */}
-          <div className="pt-2">
-            <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-zinc-200/60 dark:bg-zinc-800/80 border border-zinc-200/80 dark:border-zinc-700/60 text-xs text-zinc-600 dark:text-zinc-300">
+          <div className="pt-3">
+            <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-muted">
               <Search className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
               <input
                 type="text"
-                placeholder="대화 검색..."
+                placeholder="대화 검색"
+                aria-label="대화 검색"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-transparent outline-none text-xs placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
+                className="w-full bg-transparent outline-none text-[13px] placeholder:text-zinc-400 dark:placeholder:text-zinc-500"
               />
               {searchQuery && (
                 <button
                   onClick={() => setSearchQuery("")}
+                  aria-label="검색 지우기"
                   className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
                 >
                   <X className="w-3 h-3" />
@@ -506,24 +532,24 @@ export const Sidebar: React.FC = () => {
         </div>
 
         {/* Session lists — agent section first, chat below */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-2 space-y-0.5" style={{ touchAction: "pan-y" }}>
+        <div className="flex-1 min-h-0 overflow-y-auto px-3 space-y-1 pb-4" style={{ touchAction: "pan-y" }}>
           {sectionHeader("에이전트", agentSessions.length, () => setAgentDialogOpen(true))}
           {agentSessions.map((s) => renderRow(s, <Bot className="w-3.5 h-3.5 flex-shrink-0 text-violet-500 dark:text-violet-400" />))}
 
           {sectionHeader("채팅", chatSessions.length, () => createSession("chat"))}
           {chatSessions.map((s) => renderRow(s, <MessageCircle className="w-3.5 h-3.5 flex-shrink-0 text-zinc-300 dark:text-zinc-600" />))}
+          {searchQuery && !filteredSessions.length && <p className="px-3 py-8 text-sm text-muted text-center">일치하는 대화가 없습니다.</p>}
         </div>
 
         {/* Footer */}
-        <div className="p-2.5 border-t border-zinc-200/70 dark:border-zinc-800 flex items-center justify-between text-[11px] text-zinc-400 flex-shrink-0">
-          <span className="font-mono truncate" title={selectedModel}>{shortModel}</span>
+        <div className="p-3 border-t border-[var(--border)] shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <button
             onClick={() => setSettingsOpen(true)}
             data-settings-trigger
             title="설정"
-            className="p-1.5 -mr-1 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+            className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium text-muted hover:bg-[var(--surface-soft)] cursor-pointer"
           >
-            <Settings className="w-3.5 h-3.5" />
+            <Settings className="size-4" /><span className="flex-1 text-left">설정</span><ChevronRight className="size-4" />
           </button>
         </div>
       </aside>
@@ -540,6 +566,7 @@ export const Sidebar: React.FC = () => {
               setAgentDialogOpen(false);
               if (window.innerWidth < 768) setSidebarOpen(false);
             }
+            return !!id;
           }}
         />
       )}
@@ -555,7 +582,7 @@ interface ValidateResult {
   error?: string;
 }
 
-const NewAgentSheet: React.FC<{ onClose: () => void; onCreate: (workdir: string) => void }> = ({ onClose, onCreate }) => {
+const NewAgentSheet: React.FC<{ onClose: () => void; onCreate: (workdir: string) => Promise<boolean> }> = ({ onClose, onCreate }) => {
   const [path, setPath] = useState("");
   const [validation, setValidation] = useState<ValidateResult | null>(null);
   const [checking, setChecking] = useState(false);
@@ -567,38 +594,43 @@ const NewAgentSheet: React.FC<{ onClose: () => void; onCreate: (workdir: string)
     const trimmed = path.trim();
     if (!trimmed) {
       setValidation(null);
+      setChecking(false);
       return;
     }
+    const controller = new AbortController();
     setChecking(true);
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/workdir/validate?path=${encodeURIComponent(trimmed)}`);
+        const res = await fetch(`/api/workdir/validate?path=${encodeURIComponent(trimmed)}`, { signal: controller.signal });
         setValidation(await res.json());
       } catch {
-        setValidation({ ok: false, error: "검증 실패" });
+        if (!controller.signal.aborted) setValidation({ ok: false, error: "폴더를 확인하지 못했습니다." });
       } finally {
-        setChecking(false);
+        if (!controller.signal.aborted) setChecking(false);
       }
     }, 350);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      controller.abort();
     };
   }, [path]);
 
-  const canCreate = validation?.ok && !creating;
+  const canCreate = validation?.ok && !checking && !creating;
+  const create = async () => { if (!canCreate) return; setCreating(true); if (!await onCreate(validation!.real_path!)) setCreating(false); };
   const inputCls =
-    "w-full bg-zinc-50 dark:bg-zinc-900 text-sm text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 px-3 py-2.5 rounded-xl border outline-none focus:border-zinc-400 dark:focus:border-zinc-500 font-mono text-xs";
+    "ui-field font-mono";
 
   return (
-    <BottomSheet onClose={onClose}>
+    <BottomSheet title="새 에이전트" compact onClose={onClose}>
       <div className="pb-5 px-5" data-new-agent-sheet>
-        <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">새 에이전트</h2>
-        <p className="pt-1 pb-3 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
-          에이전트는 지정한 디렉토리에서 <span className="font-medium text-zinc-700 dark:text-zinc-200">호스트에서 직접</span> 실행됩니다
-          (샌드박스 없음). 신뢰하는 프로젝트 디렉토리만 지정하세요.
+        <p className="pb-4 text-sm leading-relaxed text-muted">
+          선택한 폴더의 파일을 읽고 호스트에서 직접 명령을 실행합니다.
         </p>
 
+        <label htmlFor="agent-workdir" className="block text-sm font-medium mb-2">프로젝트 폴더</label>
         <input
+          id="agent-workdir"
+          data-autofocus
           autoFocus
           value={path}
           onChange={(e) => setPath(e.target.value)}
@@ -614,8 +646,7 @@ const NewAgentSheet: React.FC<{ onClose: () => void; onCreate: (workdir: string)
           }`}
           onKeyDown={(e) => {
             if (e.key === "Enter" && canCreate) {
-              setCreating(true);
-              onCreate(validation!.real_path!);
+              create();
             }
           }}
         />
@@ -633,17 +664,14 @@ const NewAgentSheet: React.FC<{ onClose: () => void; onCreate: (workdir: string)
         <div className="flex justify-end gap-2 pt-2">
           <button
             onClick={onClose}
-            className="px-4 py-2 rounded-xl text-sm text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+            className="ui-button"
           >
             취소
           </button>
           <button
             disabled={!canCreate}
-            onClick={() => {
-              setCreating(true);
-              onCreate(validation!.real_path!);
-            }}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-sm font-medium hover:opacity-85 transition-opacity cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            onClick={create}
+            className="ui-button ui-button-primary"
           >
             {creating ? "생성 중…" : "에이전트 시작"}
           </button>

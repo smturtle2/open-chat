@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p client/tsconfig.json",
     "test": "node tests/run.mjs",
     "test:unit": "node tests/run.mjs",
-    "test:e2e": "node tests/run.mjs test_ui.js"
+    "test:e2e": "node tests/run.mjs test_ui.js test_ui_interactions.js"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
